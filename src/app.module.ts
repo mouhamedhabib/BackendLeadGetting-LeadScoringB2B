@@ -3,12 +3,14 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { McpModule } from '@nestjs-mcp/server';
 import { HealthResolver } from './mcp/health.resolver';
+import { ReportsModule } from './reports/reports.module';
+import { LeadsModule } from './leads/leads.module';
 
 @Module({
   imports: [McpModule.forRoot({
       name: 'My MCP Server',
       version: '1.0.0',
-    }),],
+    }), ReportsModule, LeadsModule,],
   controllers: [AppController],
   providers: [AppService ,HealthResolver],
 })
