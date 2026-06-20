@@ -40,7 +40,14 @@ export class LeadsService {
           opportunity: 3.2,
           analysisCost: 400,
         },
-        contacts: [],
+        contacts: [
+          {
+            name: 'John Doe',
+            email: 'john.doe@example.com',
+            phone: '+216 53 012 345',
+            moveInDate: '2024-11-08',
+          },
+        ],
         lastUpdated: new Date(),
       },
       {
