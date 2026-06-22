@@ -9,10 +9,10 @@ import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [McpModule.forRoot({
-      name: 'My MCP Server',
-      version: '1.0.0',
-    }), ReportsModule, LeadsModule, DashboardModule,],
+    name: 'My MCP Server',
+    version: '1.0.0',
+  }), ReportsModule, LeadsModule, DashboardModule,],
   controllers: [AppController],
-  providers: [AppService ,HealthResolver],
+  providers: [AppService, HealthResolver],
 })
-export class AppModule {}
+export class AppModule { }
