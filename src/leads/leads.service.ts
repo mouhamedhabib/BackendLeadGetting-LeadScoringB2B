@@ -1,4 +1,26 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { In, Repository } from 'typeorm';
+import { Lead } from './lead.entity';
+
+const GOOGLE_PLACES_URL = 'https://places.googleapis.com/v1/places:searchText';
+const GOOGLE_PLACES_FIELD_MASK = [
+  'places.id',
+  'places.displayName',
+  'places.formattedAddress',
+  'places.nationalPhoneNumber',
+  'places.websiteUri',
+  'places.rating',
+  'places.userRatingCount',
+  'places.location',
+].join(',');
+const GOOGLE_PLACES_MAX_ATTEMPTS = 3;
+const GOOGLE_PLACES_RETRY_DELAY_MS = 250;
 
 /** Analysis modules used to split scores in the breakdown response. */
 const ANALYSIS_MODULES = [
@@ -21,9 +43,94 @@ type BreakdownItem = {
   percentage: number;
 };
 
+type GooglePlace = {
+  id?: string;
+  displayName?: { text?: string };
+  formattedAddress?: string;
+  nationalPhoneNumber?: string;
+  websiteUri?: string;
+  rating?: number;
+  userRatingCount?: number;
+  location?: {
+    latitude?: number;
+    longitude?: number;
+  };
+};
+
+type GooglePlacesResponse = {
+  places?: GooglePlace[];
+};
+
 @Injectable()
 export class LeadsService {
-  findAll() {
+  constructor(
+    @InjectRepository(Lead)
+    private readonly leadsRepository: Repository<Lead>,
+    private readonly configService: ConfigService,
+  ) {}
+
+  findAll(): Promise<Lead[]> {
+    return this.leadsRepository.find();
+  }
+
+  async findOne(id: string): Promise<Lead> {
+    const lead = await this.leadsRepository.findOne({
+      where: { id },
+      relations: {
+        contacts: true,
+        analyses: true,
+        scores: true,
+      },
+    });
+
+    if (!lead) {
+      throw new NotFoundException(`Lead with id "${id}" not found`);
+    }
+
+    return lead;
+  }
+
+  async search(query: string): Promise<Lead[]> {
+    const places = await this.fetchPlaces(query);
+    const leads = places.flatMap((place) => {
+      if (!place.id) {
+        return [];
+      }
+
+      return [
+        {
+          id: place.id,
+          name: place.displayName?.text ?? null,
+          address: place.formattedAddress ?? null,
+          phone: place.nationalPhoneNumber ?? null,
+          website: place.websiteUri ?? null,
+          rating: this.numberOrNull(place.rating),
+          userRatingsTotal: this.numberOrNull(place.userRatingCount),
+          lat: this.numberOrNull(place.location?.latitude),
+          lng: this.numberOrNull(place.location?.longitude),
+          searchQuery: query,
+        },
+      ];
+    });
+
+    if (leads.length === 0) {
+      return [];
+    }
+
+    await this.leadsRepository.upsert(leads, ['id']);
+
+    const savedLeads = await this.leadsRepository.findBy({
+      id: In(leads.map((lead) => lead.id)),
+    });
+    const savedById = new Map(savedLeads.map((lead) => [lead.id, lead]));
+
+    return leads.flatMap((lead) => {
+      const savedLead = savedById.get(lead.id);
+      return savedLead ? [savedLead] : [];
+    });
+  }
+
+  private getMockLeads() {
     return [
       {
         id: '101',
@@ -133,13 +240,9 @@ export class LeadsService {
     ];
   }
 
-  /** Returns a single lead or throws when the id is unknown. */
-  findOne(id: string) {
-    const lead = this.findAll().find((item) => item.id === id);
-    if (!lead) {
-      throw new NotFoundException(`Lead with id "${id}" not found`);
-    }
-    return lead;
+  /** Keeps the existing deterministic timeline/breakdown mock isolated. */
+  private findMockLead(id: string) {
+    return this.getMockLeads().find((item) => item.id === id);
   }
 
   /**
@@ -147,8 +250,12 @@ export class LeadsService {
    * current scores toward today's snapshot, with a deterministic ±10% wobble
    * derived from a string hash of lead id + day index (no Math.random()).
    */
-  getTimeline(id: string): TimelinePoint[] {
-    const lead = this.findOne(id);
+  async getTimeline(id: string): Promise<TimelinePoint[]> {
+    const lead = this.findMockLead(id);
+    if (!lead) {
+      await this.findOne(id);
+      return [];
+    }
     const { digitalMaturity, opportunity, analysisCost } = lead.currentScore;
     const points: TimelinePoint[] = [];
     const today = new Date();
@@ -179,10 +286,7 @@ export class LeadsService {
 
       points.push({
         date: dateStr,
-        digitalMaturity: Math.max(
-          0,
-          Math.round(maturityBase * (1 + wobble)),
-        ),
+        digitalMaturity: Math.max(0, Math.round(maturityBase * (1 + wobble))),
         opportunity: Math.max(
           0,
           Math.round(opportunityBase * (1 + wobble) * 100) / 100,
@@ -198,11 +302,15 @@ export class LeadsService {
    * Splits current digital-maturity and opportunity scores across the four
    * analysis modules. Percentages are normalized to sum to exactly 100.
    */
-  getBreakdown(id: string): {
+  async getBreakdown(id: string): Promise<{
     digitalMaturity: BreakdownItem[];
     opportunity: BreakdownItem[];
-  } {
-    const lead = this.findOne(id);
+  }> {
+    const lead = this.findMockLead(id);
+    if (!lead) {
+      await this.findOne(id);
+      return { digitalMaturity: [], opportunity: [] };
+    }
 
     return {
       digitalMaturity: this.buildModuleBreakdown(
@@ -239,7 +347,8 @@ export class LeadsService {
     const percentageTotal = percentages.reduce((sum, p) => sum + p, 0);
     const remainder = Math.round((100 - percentageTotal) * 10) / 10;
     const maxIndex = percentages.indexOf(Math.max(...percentages));
-    percentages[maxIndex] = Math.round((percentages[maxIndex] + remainder) * 10) / 10;
+    percentages[maxIndex] =
+      Math.round((percentages[maxIndex] + remainder) * 10) / 10;
 
     return ANALYSIS_MODULES.map((category, index) => ({
       category,
@@ -256,6 +365,62 @@ export class LeadsService {
       hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
     }
     return (hash % 1000) / 1000;
+  }
+
+  private async fetchPlaces(query: string): Promise<GooglePlace[]> {
+    const apiKey = this.configService
+      .get<string>('GOOGLE_PLACES_API_KEY')
+      ?.trim();
+
+    if (!apiKey || apiKey === 'YOUR_KEY_HERE') {
+      throw new ServiceUnavailableException(
+        'GOOGLE_PLACES_API_KEY is not configured',
+      );
+    }
+
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < GOOGLE_PLACES_MAX_ATTEMPTS; attempt++) {
+      try {
+        const response = await fetch(GOOGLE_PLACES_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': apiKey,
+            'X-Goog-FieldMask': GOOGLE_PLACES_FIELD_MASK,
+          },
+          body: JSON.stringify({ textQuery: query }),
+        });
+
+        if (!response.ok) {
+          throw new Error(
+            `Google Places returned ${response.status} ${response.statusText}`,
+          );
+        }
+
+        const payload = (await response.json()) as GooglePlacesResponse;
+        return Array.isArray(payload.places) ? payload.places : [];
+      } catch (error) {
+        lastError = error;
+        if (attempt < GOOGLE_PLACES_MAX_ATTEMPTS - 1) {
+          await this.delay(GOOGLE_PLACES_RETRY_DELAY_MS * Math.pow(2, attempt));
+        }
+      }
+    }
+
+    const reason =
+      lastError instanceof Error ? lastError.message : 'unknown error';
+    throw new ServiceUnavailableException(
+      `Google Places search failed after ${GOOGLE_PLACES_MAX_ATTEMPTS} attempts: ${reason}`,
+    );
+  }
+
+  private numberOrNull(value: number | undefined): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
+  private delay(milliseconds: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
   }
 
   /** YYYY-MM-DD in local time — avoids UTC shift from toISOString(). */

@@ -1,18 +1,27 @@
-import { Test, TestingModule } from '@nestjs/testing';
+import { BadRequestException } from '@nestjs/common';
 import { LeadsController } from './leads.controller';
+import { LeadsService } from './leads.service';
 
 describe('LeadsController', () => {
-  let controller: LeadsController;
+  const leadsService = {
+    search: jest.fn(),
+  };
+  const controller = new LeadsController(
+    leadsService as unknown as LeadsService,
+  );
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      controllers: [LeadsController],
-    }).compile();
-
-    controller = module.get<LeadsController>(LeadsController);
+  beforeEach(() => {
+    jest.clearAllMocks();
   });
 
-  it('should be defined', () => {
-    expect(controller).toBeDefined();
+  it('delegates a trimmed search query to the service', async () => {
+    leadsService.search.mockResolvedValue([]);
+
+    await expect(controller.search('  plumber  ')).resolves.toEqual([]);
+    expect(leadsService.search).toHaveBeenCalledWith('plumber');
+  });
+
+  it('rejects a missing search query', () => {
+    expect(() => controller.search('   ')).toThrow(BadRequestException);
   });
 });

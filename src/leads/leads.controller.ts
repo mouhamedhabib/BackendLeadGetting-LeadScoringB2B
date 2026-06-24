@@ -1,4 +1,11 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { LeadsService } from './leads.service';
 
 @Controller('leads')
@@ -8,6 +15,16 @@ export class LeadsController {
   @Get()
   findAll() {
     return this.leadsService.findAll();
+  }
+
+  @Post('search')
+  search(@Query('query') query?: string) {
+    const normalizedQuery = query?.trim();
+    if (!normalizedQuery) {
+      throw new BadRequestException('The "query" parameter is required');
+    }
+
+    return this.leadsService.search(normalizedQuery);
   }
 
   /** 30-day deterministic score history for charts on the lead detail page. */
