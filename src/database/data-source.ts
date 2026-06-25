@@ -6,6 +6,8 @@ import { LeadContact } from '../leads/lead-contact.entity';
 import { Lead } from '../leads/lead.entity';
 import { LeadScore } from '../leads/lead-score.entity';
 import { LeadAxisScore } from '../leads/lead-axis-score.entity';
+import { ScrapingJob } from '../leads/scraping-job.entity';
+import { ScrapingRawResult } from '../leads/scraping-raw-result.entity';
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -16,7 +18,15 @@ if (!databaseUrl) {
 export default new DataSource({
   type: 'postgres',
   url: databaseUrl,
-  entities: [Lead, LeadContact, LeadAnalysis, LeadScore, LeadAxisScore],
+  entities: [
+    Lead,
+    LeadContact,
+    LeadAnalysis,
+    LeadScore,
+    LeadAxisScore,
+    ScrapingJob,
+    ScrapingRawResult,
+  ],
   migrations: [`${__dirname}/migrations/*{.ts,.js}`],
   synchronize: false,
 });

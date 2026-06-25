@@ -2,6 +2,23 @@ import dataSource from '../data-source';
 
 type LeadRow = { google_place_id: string };
 type AnalysisRow = { id: number; lead_id: string };
+type ScrapingJobSeed = {
+  leadId: string;
+  jobType: 'FULL' | 'WEBSITE' | 'SEO' | 'SOCIAL';
+  status: 'SUCCESS' | 'FAILED' | 'PARTIAL';
+  source: 'website' | 'facebook' | 'fastapi_scraper';
+  trigger: 'initial_enrichment';
+  durationMs: number;
+  errorMessage: string | null;
+  rawJson: {
+    url: string;
+    title: string;
+    source: string;
+    notes: string;
+  };
+};
+
+type ScrapingJobRow = { id: number };
 
 const seedLeadIds = [
   'phase-1-5-demo-bakery',
@@ -79,6 +96,114 @@ const dailyScoreProfiles: DailyScoreProfile[] = [
     digitalMaturity: [60, 75],
     opportunity: [30, 48],
     analysisCost: [6, 8.9],
+  },
+];
+
+const scrapingJobSeeds: ScrapingJobSeed[] = [
+  {
+    leadId: 'phase-1-5-demo-bakery',
+    jobType: 'WEBSITE',
+    status: 'SUCCESS',
+    source: 'website',
+    trigger: 'initial_enrichment',
+    durationMs: 420,
+    errorMessage: null,
+    rawJson: {
+      url: 'https://example.test/demo-1',
+      title: 'Demo title 1',
+      source: 'website',
+      notes: 'development seed only',
+    },
+  },
+  {
+    leadId: 'phase-1-5-demo-bakery',
+    jobType: 'SEO',
+    status: 'SUCCESS',
+    source: 'website',
+    trigger: 'initial_enrichment',
+    durationMs: 510,
+    errorMessage: null,
+    rawJson: {
+      url: 'https://example.test/demo-1/seo',
+      title: 'Demo title 1 SEO',
+      source: 'website',
+      notes: 'development seed only',
+    },
+  },
+  {
+    leadId: 'phase-1-5-demo-bakery',
+    jobType: 'SOCIAL',
+    status: 'PARTIAL',
+    source: 'facebook',
+    trigger: 'initial_enrichment',
+    durationMs: 650,
+    errorMessage: 'Instagram profile unavailable in demo seed',
+    rawJson: {
+      url: 'https://facebook.com/example-bakery',
+      title: 'Demo Bakery social profile',
+      source: 'facebook',
+      notes: 'development seed only',
+    },
+  },
+  {
+    leadId: 'phase-1-5-demo-plumber',
+    jobType: 'WEBSITE',
+    status: 'SUCCESS',
+    source: 'website',
+    trigger: 'initial_enrichment',
+    durationMs: 440,
+    errorMessage: null,
+    rawJson: {
+      url: 'https://example.test/demo-2',
+      title: 'Demo title 2',
+      source: 'website',
+      notes: 'development seed only',
+    },
+  },
+  {
+    leadId: 'phase-1-5-demo-plumber',
+    jobType: 'SEO',
+    status: 'PARTIAL',
+    source: 'website',
+    trigger: 'initial_enrichment',
+    durationMs: 590,
+    errorMessage: 'Robots metadata missing in demo seed',
+    rawJson: {
+      url: 'https://example.test/demo-2/seo',
+      title: 'Demo title 2 SEO',
+      source: 'website',
+      notes: 'development seed only',
+    },
+  },
+  {
+    leadId: 'phase-1-5-demo-plumber',
+    jobType: 'SOCIAL',
+    status: 'FAILED',
+    source: 'facebook',
+    trigger: 'initial_enrichment',
+    durationMs: 320,
+    errorMessage: 'Social profile lookup failed in demo seed',
+    rawJson: {
+      url: 'https://facebook.com/example-plumber',
+      title: 'Demo Plumber social profile',
+      source: 'facebook',
+      notes: 'development seed only',
+    },
+  },
+  {
+    leadId: 'phase-1-5-demo-agency',
+    jobType: 'FULL',
+    status: 'SUCCESS',
+    source: 'fastapi_scraper',
+    trigger: 'initial_enrichment',
+    durationMs: 880,
+    errorMessage: null,
+    rawJson: {
+      url: 'https://example.test/demo-3',
+      title: 'Demo title 3',
+      source: 'fastapi_scraper',
+      notes: 'development seed only',
+    },
   },
 ];
 
@@ -374,6 +499,77 @@ async function seed(): Promise<void> {
           index === 0 ? null : `Demo title ${index + 1}`,
           index === 2,
           index === 0 ? null : 70 + index,
+        ],
+      );
+    }
+
+    for (const scrapingJob of scrapingJobSeeds) {
+      await queryRunner.query(
+        `INSERT INTO scraping_jobs
+          (lead_id, job_type, status, source, "trigger", started_at,
+           finished_at, duration_ms, error_message, created_at, updated_at)
+         SELECT $1::varchar, $2::varchar, $3::varchar, $4::varchar,
+                $5::varchar, now(), now(), $6::int, $7::text, now(), now()
+         WHERE EXISTS (
+           SELECT 1 FROM leads WHERE google_place_id = $1::varchar
+         )
+           AND NOT EXISTS (
+             SELECT 1 FROM scraping_jobs
+             WHERE lead_id = $1::varchar
+               AND job_type = $2::varchar
+               AND source = $4::varchar
+               AND "trigger" = $5::varchar
+           )`,
+        [
+          scrapingJob.leadId,
+          scrapingJob.jobType,
+          scrapingJob.status,
+          scrapingJob.source,
+          scrapingJob.trigger,
+          scrapingJob.durationMs,
+          scrapingJob.errorMessage,
+        ],
+      );
+
+      const [job] = (await queryRunner.query(
+        `SELECT id
+         FROM scraping_jobs
+         WHERE lead_id = $1::varchar
+           AND job_type = $2::varchar
+           AND source = $3::varchar
+           AND "trigger" = $4::varchar
+         ORDER BY id
+         LIMIT 1`,
+        [
+          scrapingJob.leadId,
+          scrapingJob.jobType,
+          scrapingJob.source,
+          scrapingJob.trigger,
+        ],
+      )) as ScrapingJobRow[];
+
+      if (!job) {
+        continue;
+      }
+
+      const dedupeKey = `${scrapingJob.leadId}:${scrapingJob.jobType}:${scrapingJob.source}:phase-1.5`;
+
+      await queryRunner.query(
+        `INSERT INTO scraping_raw_results
+          (job_id, lead_id, source, raw_json, normalized_status,
+           dedupe_key, created_at)
+         SELECT $1::int, $2::varchar, $3::varchar, $4::jsonb,
+                'RAW', $5::varchar, now()
+         WHERE NOT EXISTS (
+           SELECT 1 FROM scraping_raw_results
+           WHERE dedupe_key = $5::varchar
+         )`,
+        [
+          job.id,
+          scrapingJob.leadId,
+          scrapingJob.source,
+          JSON.stringify(scrapingJob.rawJson),
+          dedupeKey,
         ],
       );
     }
