@@ -13,6 +13,8 @@ import { LeadContact } from './leads/lead-contact.entity';
 import { Lead } from './leads/lead.entity';
 import { LeadScore } from './leads/lead-score.entity';
 import { LeadAxisScore } from './leads/lead-axis-score.entity';
+import { ScrapingJob } from './leads/scraping-job.entity';
+import { ScrapingRawResult } from './leads/scraping-raw-result.entity';
 
 @Module({
   imports: [
@@ -22,7 +24,15 @@ import { LeadAxisScore } from './leads/lead-axis-score.entity';
       useFactory: (configService: ConfigService) => ({
         type: 'postgres',
         url: configService.getOrThrow<string>('DATABASE_URL'),
-        entities: [Lead, LeadContact, LeadAnalysis, LeadScore, LeadAxisScore],
+        entities: [
+          Lead,
+          LeadContact,
+          LeadAnalysis,
+          LeadScore,
+          LeadAxisScore,
+          ScrapingJob,
+          ScrapingRawResult,
+        ],
         synchronize: false,
       }),
     }),

@@ -10,6 +10,8 @@ import { LeadAnalysis } from './lead-analysis.entity';
 import { LeadContact } from './lead-contact.entity';
 import { LeadScore } from './lead-score.entity';
 import { LeadAxisScore } from './lead-axis-score.entity';
+import { ScrapingJob } from './scraping-job.entity';
+import { ScrapingRawResult } from './scraping-raw-result.entity';
 
 export enum LeadState {
   RAW = 'RAW',
@@ -71,4 +73,13 @@ export class Lead {
 
   @OneToMany(() => LeadAxisScore, (axisScore) => axisScore.lead)
   axisScores: LeadAxisScore[];
+
+  @OneToMany(() => ScrapingJob, (scrapingJob) => scrapingJob.lead)
+  scrapingJobs: ScrapingJob[];
+
+  @OneToMany(
+    () => ScrapingRawResult,
+    (scrapingRawResult) => scrapingRawResult.lead,
+  )
+  scrapingRawResults: ScrapingRawResult[];
 }
