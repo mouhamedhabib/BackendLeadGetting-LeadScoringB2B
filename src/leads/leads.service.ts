@@ -1,4 +1,32 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { In, Repository } from 'typeorm';
+import { Lead } from './lead.entity';
+import {
+  AxisScoreType,
+  LeadAxisScore,
+  LeadScoreAxis,
+} from './lead-axis-score.entity';
+import { LeadScore } from './lead-score.entity';
+
+const GOOGLE_PLACES_URL = 'https://places.googleapis.com/v1/places:searchText';
+const GOOGLE_PLACES_FIELD_MASK = [
+  'places.id',
+  'places.displayName',
+  'places.formattedAddress',
+  'places.nationalPhoneNumber',
+  'places.websiteUri',
+  'places.rating',
+  'places.userRatingCount',
+  'places.location',
+].join(',');
+const GOOGLE_PLACES_MAX_ATTEMPTS = 3;
+const GOOGLE_PLACES_RETRY_DELAY_MS = 250;
 
 /** Analysis modules used to split scores in the breakdown response. */
 const ANALYSIS_MODULES = [
@@ -17,13 +45,110 @@ type TimelinePoint = {
 
 type BreakdownItem = {
   category: string;
-  opportunity: number;
-  percentage: number;
+  opportunity: number | null;
+  percentage: number | null;
+  weightedScore?: number | null;
+  isAvailable?: boolean;
+};
+
+type GooglePlace = {
+  id?: string;
+  displayName?: { text?: string };
+  formattedAddress?: string;
+  nationalPhoneNumber?: string;
+  websiteUri?: string;
+  rating?: number;
+  userRatingCount?: number;
+  location?: {
+    latitude?: number;
+    longitude?: number;
+  };
+};
+
+type GooglePlacesResponse = {
+  places?: GooglePlace[];
 };
 
 @Injectable()
 export class LeadsService {
-  findAll() {
+  constructor(
+    @InjectRepository(Lead)
+    private readonly leadsRepository: Repository<Lead>,
+
+    @InjectRepository(LeadScore)
+    private readonly leadScoresRepository: Repository<LeadScore>,
+
+    private readonly configService: ConfigService,
+  ) { }
+
+  findAll(): Promise<Lead[]> {
+    return this.leadsRepository.find({
+      relations: {
+        contacts: true,
+        scores: true,
+      },
+    });
+  }
+
+  async findOne(id: string): Promise<Lead> {
+    const lead = await this.leadsRepository.findOne({
+      where: { id },
+      relations: {
+        contacts: true,
+        analyses: true,
+        scores: true,
+        axisScores: true,
+      },
+    });
+
+    if (!lead) {
+      throw new NotFoundException(`Lead with id "${id}" not found`);
+    }
+
+    return lead;
+  }
+
+  async search(query: string): Promise<Lead[]> {
+    const places = await this.fetchPlaces(query);
+    const leads = places.flatMap((place) => {
+      if (!place.id) {
+        return [];
+      }
+
+      return [
+        {
+          id: place.id,
+          name: place.displayName?.text ?? null,
+          address: place.formattedAddress ?? null,
+          phone: place.nationalPhoneNumber ?? null,
+          website: place.websiteUri ?? null,
+          rating: this.numberOrNull(place.rating),
+          userRatingsTotal: this.numberOrNull(place.userRatingCount),
+          lat: this.numberOrNull(place.location?.latitude),
+          lng: this.numberOrNull(place.location?.longitude),
+          searchQuery: query,
+        },
+      ];
+    });
+
+    if (leads.length === 0) {
+      return [];
+    }
+
+    await this.leadsRepository.upsert(leads, ['id']);
+
+    const savedLeads = await this.leadsRepository.findBy({
+      id: In(leads.map((lead) => lead.id)),
+    });
+    const savedById = new Map(savedLeads.map((lead) => [lead.id, lead]));
+
+    return leads.flatMap((lead) => {
+      const savedLead = savedById.get(lead.id);
+      return savedLead ? [savedLead] : [];
+    });
+  }
+
+  private getMockLeads() {
     return [
       {
         id: '101',
@@ -133,13 +258,9 @@ export class LeadsService {
     ];
   }
 
-  /** Returns a single lead or throws when the id is unknown. */
-  findOne(id: string) {
-    const lead = this.findAll().find((item) => item.id === id);
-    if (!lead) {
-      throw new NotFoundException(`Lead with id "${id}" not found`);
-    }
-    return lead;
+  /** Keeps the existing deterministic timeline/breakdown mock isolated. */
+  private findMockLead(id: string) {
+    return this.getMockLeads().find((item) => item.id === id);
   }
 
   /**
@@ -147,75 +268,105 @@ export class LeadsService {
    * current scores toward today's snapshot, with a deterministic ±10% wobble
    * derived from a string hash of lead id + day index (no Math.random()).
    */
-  getTimeline(id: string): TimelinePoint[] {
-    const lead = this.findOne(id);
-    const { digitalMaturity, opportunity, analysisCost } = lead.currentScore;
-    const points: TimelinePoint[] = [];
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+  async getTimeline(id: string): Promise<TimelinePoint[]> {
+    const mockLead = this.findMockLead(id);
 
-    for (let dayIndex = 0; dayIndex < 30; dayIndex++) {
-      const date = new Date(today);
-      date.setDate(today.getDate() - (29 - dayIndex));
-      const dateStr = this.formatLocalDate(date);
-
-      // Progress 0→1 over the window; last day equals currentScore exactly.
-      const progress = dayIndex / 29;
-      const wobble = (this.deterministicFactor(id, dayIndex) - 0.5) * 0.2;
-
-      if (dayIndex === 29) {
-        points.push({
-          date: dateStr,
+    if (mockLead) {
+      const { digitalMaturity, opportunity, analysisCost } = mockLead.currentScore;
+      return [
+        {
+          date: this.formatLocalDate(new Date()),
           digitalMaturity,
           opportunity,
           cost: analysisCost,
-        });
-        continue;
-      }
-
-      const maturityBase = digitalMaturity * (0.7 + 0.3 * progress);
-      const opportunityBase = opportunity * (0.7 + 0.3 * progress);
-      const costBase = analysisCost * (0.7 + 0.3 * progress);
-
-      points.push({
-        date: dateStr,
-        digitalMaturity: Math.max(
-          0,
-          Math.round(maturityBase * (1 + wobble)),
-        ),
-        opportunity: Math.max(
-          0,
-          Math.round(opportunityBase * (1 + wobble) * 100) / 100,
-        ),
-        cost: Math.max(0, Math.round(costBase * (1 + wobble))),
-      });
+        },
+      ];
     }
 
-    return points;
+    await this.findOne(id);
+
+    const dailyScores = await this.leadScoresRepository.find({
+      where: {
+        lead: { id },
+        periodType: 'daily',
+      },
+      order: {
+        scoreDate: 'ASC',
+      },
+    });
+
+    return dailyScores.map((score) => ({
+      date: this.formatLocalDate(new Date(score.scoreDate)), 
+      digitalMaturity: Number(score.digitalMaturity ?? 0),
+      opportunity: Number(score.opportunity ?? 0),
+      cost: Number(score.analysisCost ?? 0),
+    }));
   }
 
   /**
-   * Splits current digital-maturity and opportunity scores across the four
-   * analysis modules. Percentages are normalized to sum to exactly 100.
+   * Returns persisted axis rows for DB leads. Legacy mock IDs keep their
+   * deterministic generated breakdown for backward compatibility.
    */
-  getBreakdown(id: string): {
+  async getBreakdown(id: string): Promise<{
     digitalMaturity: BreakdownItem[];
     opportunity: BreakdownItem[];
-  } {
-    const lead = this.findOne(id);
+  }> {
+    const mockLead = this.findMockLead(id);
+    if (!mockLead) {
+      const lead = await this.findOne(id);
+      return {
+        digitalMaturity: this.mapAxisScores(
+          lead.axisScores ?? [],
+          AxisScoreType.DIGITAL_MATURITY,
+        ),
+        opportunity: this.mapAxisScores(
+          lead.axisScores ?? [],
+          AxisScoreType.OPPORTUNITY,
+        ),
+      };
+    }
 
     return {
       digitalMaturity: this.buildModuleBreakdown(
         id,
         'maturity',
-        lead.currentScore.digitalMaturity,
+        mockLead.currentScore.digitalMaturity,
       ),
       opportunity: this.buildModuleBreakdown(
         id,
         'opportunity',
-        lead.currentScore.opportunity,
+        mockLead.currentScore.opportunity,
       ),
     };
+  }
+
+  private mapAxisScores(
+    axisScores: LeadAxisScore[],
+    scoreType: AxisScoreType,
+  ): BreakdownItem[] {
+    const axisOrder: LeadScoreAxis[] = [
+      LeadScoreAxis.GMB,
+      LeadScoreAxis.WEBSITE,
+      LeadScoreAxis.SEO,
+      LeadScoreAxis.SOCIAL,
+    ];
+
+    return axisScores
+      .filter((axisScore) => axisScore.scoreType === scoreType)
+      .sort(
+        (left, right) =>
+          axisOrder.indexOf(left.axis) - axisOrder.indexOf(right.axis),
+      )
+      .map((axisScore) => {
+        const weight = this.decimalOrNull(axisScore.weight);
+        return {
+          category: axisScore.axis,
+          opportunity: this.decimalOrNull(axisScore.score),
+          percentage: weight === null ? null : weight * 100,
+          weightedScore: this.decimalOrNull(axisScore.weightedScore),
+          isAvailable: axisScore.isAvailable,
+        };
+      });
   }
 
   /**
@@ -239,7 +390,8 @@ export class LeadsService {
     const percentageTotal = percentages.reduce((sum, p) => sum + p, 0);
     const remainder = Math.round((100 - percentageTotal) * 10) / 10;
     const maxIndex = percentages.indexOf(Math.max(...percentages));
-    percentages[maxIndex] = Math.round((percentages[maxIndex] + remainder) * 10) / 10;
+    percentages[maxIndex] =
+      Math.round((percentages[maxIndex] + remainder) * 10) / 10;
 
     return ANALYSIS_MODULES.map((category, index) => ({
       category,
@@ -256,6 +408,70 @@ export class LeadsService {
       hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
     }
     return (hash % 1000) / 1000;
+  }
+
+  private async fetchPlaces(query: string): Promise<GooglePlace[]> {
+    const apiKey = this.configService
+      .get<string>('GOOGLE_PLACES_API_KEY')
+      ?.trim();
+
+    if (!apiKey || apiKey === 'YOUR_KEY_HERE') {
+      throw new ServiceUnavailableException(
+        'GOOGLE_PLACES_API_KEY is not configured',
+      );
+    }
+
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < GOOGLE_PLACES_MAX_ATTEMPTS; attempt++) {
+      try {
+        const response = await fetch(GOOGLE_PLACES_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': apiKey,
+            'X-Goog-FieldMask': GOOGLE_PLACES_FIELD_MASK,
+          },
+          body: JSON.stringify({ textQuery: query }),
+        });
+
+        if (!response.ok) {
+          throw new Error(
+            `Google Places returned ${response.status} ${response.statusText}`,
+          );
+        }
+
+        const payload = (await response.json()) as GooglePlacesResponse;
+        return Array.isArray(payload.places) ? payload.places : [];
+      } catch (error) {
+        lastError = error;
+        if (attempt < GOOGLE_PLACES_MAX_ATTEMPTS - 1) {
+          await this.delay(GOOGLE_PLACES_RETRY_DELAY_MS * Math.pow(2, attempt));
+        }
+      }
+    }
+
+    const reason =
+      lastError instanceof Error ? lastError.message : 'unknown error';
+    throw new ServiceUnavailableException(
+      `Google Places search failed after ${GOOGLE_PLACES_MAX_ATTEMPTS} attempts: ${reason}`,
+    );
+  }
+
+  private numberOrNull(value: number | undefined): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
+  private decimalOrNull(value: string | null): number | null {
+    if (value === null) {
+      return null;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private delay(milliseconds: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
   }
 
   /** YYYY-MM-DD in local time — avoids UTC shift from toISOString(). */
