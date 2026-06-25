@@ -5,6 +5,7 @@ import { LeadAnalysis } from '../leads/lead-analysis.entity';
 import { LeadContact } from '../leads/lead-contact.entity';
 import { Lead } from '../leads/lead.entity';
 import { LeadScore } from '../leads/lead-score.entity';
+import { LeadAxisScore } from '../leads/lead-axis-score.entity';
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -15,7 +16,7 @@ if (!databaseUrl) {
 export default new DataSource({
   type: 'postgres',
   url: databaseUrl,
-  entities: [Lead, LeadContact, LeadAnalysis, LeadScore],
+  entities: [Lead, LeadContact, LeadAnalysis, LeadScore, LeadAxisScore],
   migrations: [`${__dirname}/migrations/*{.ts,.js}`],
   synchronize: false,
 });

@@ -3,29 +3,42 @@ import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { Lead, LeadState } from './lead.entity';
 import { LeadsService } from './leads.service';
+import {
+  AxisScoreType,
+  LeadAxisScore,
+  LeadScoreAxis,
+} from './lead-axis-score.entity';
+import { LeadScore } from './lead-score.entity';
 
 describe('LeadsService', () => {
   let service: LeadsService;
   let repository: {
     find: jest.Mock;
-    findOneBy: jest.Mock;
+    findOne: jest.Mock;
     upsert: jest.Mock;
     findBy: jest.Mock;
+  };
+  let leadScoresRepository: {
+    find: jest.Mock;
   };
   let configService: { get: jest.Mock };
 
   beforeEach(() => {
     repository = {
       find: jest.fn(),
-      findOneBy: jest.fn(),
+      findOne: jest.fn(),
       upsert: jest.fn(),
       findBy: jest.fn(),
+    };
+    leadScoresRepository = {
+      find: jest.fn().mockResolvedValue([]),
     };
     configService = {
       get: jest.fn().mockReturnValue('test-api-key'),
     };
     service = new LeadsService(
       repository as unknown as Repository<Lead>,
+      leadScoresRepository as unknown as Repository<LeadScore>,
       configService as unknown as ConfigService,
     );
   });
@@ -40,10 +53,16 @@ describe('LeadsService', () => {
     repository.find.mockResolvedValue(leads);
 
     await expect(service.findAll()).resolves.toBe(leads);
+    expect(repository.find).toHaveBeenCalledWith({
+      relations: {
+        contacts: true,
+        scores: true,
+      },
+    });
   });
 
   it('throws when a DB-backed lead does not exist', async () => {
-    repository.findOneBy.mockResolvedValue(null);
+    repository.findOne.mockResolvedValue(null);
 
     await expect(service.findOne('missing')).rejects.toBeInstanceOf(
       NotFoundException,
@@ -110,11 +129,11 @@ describe('LeadsService', () => {
   });
 
   it('keeps the deterministic timeline mock available', async () => {
-    await expect(service.getTimeline('101')).resolves.toHaveLength(30);
+    await expect(service.getTimeline('101')).resolves.toHaveLength(1);
   });
 
   it('returns safe optional detail data for a DB-backed lead', async () => {
-    repository.findOneBy.mockResolvedValue({ id: 'place-1' });
+    repository.findOne.mockResolvedValue({ id: 'place-1' });
 
     await expect(service.getTimeline('place-1')).resolves.toEqual([]);
     await expect(service.getBreakdown('place-1')).resolves.toEqual({
@@ -123,8 +142,52 @@ describe('LeadsService', () => {
     });
   });
 
+  it('maps persisted axis scores without calculating a final score', async () => {
+    repository.findOne.mockResolvedValue({
+      id: 'place-1',
+      axisScores: [
+        {
+          axis: LeadScoreAxis.GMB,
+          scoreType: AxisScoreType.DIGITAL_MATURITY,
+          score: '70',
+          weight: '0.2',
+          weightedScore: '14',
+          isAvailable: true,
+        },
+        {
+          axis: LeadScoreAxis.SOCIAL,
+          scoreType: AxisScoreType.DIGITAL_MATURITY,
+          score: null,
+          weight: '0.2',
+          weightedScore: null,
+          isAvailable: false,
+        },
+      ] as LeadAxisScore[],
+    });
+
+    await expect(service.getBreakdown('place-1')).resolves.toEqual({
+      digitalMaturity: [
+        {
+          category: 'GMB',
+          opportunity: 70,
+          percentage: 20,
+          weightedScore: 14,
+          isAvailable: true,
+        },
+        {
+          category: 'SOCIAL',
+          opportunity: null,
+          percentage: 20,
+          weightedScore: null,
+          isAvailable: false,
+        },
+      ],
+      opportunity: [],
+    });
+  });
+
   it('keeps a real 404 for optional detail data when the lead does not exist', async () => {
-    repository.findOneBy.mockResolvedValue(null);
+    repository.findOne.mockResolvedValue(null);
 
     await expect(service.getTimeline('missing')).rejects.toBeInstanceOf(
       NotFoundException,

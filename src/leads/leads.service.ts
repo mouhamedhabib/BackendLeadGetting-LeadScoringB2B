@@ -7,6 +7,12 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { Lead } from './lead.entity';
+import {
+  AxisScoreType,
+  LeadAxisScore,
+  LeadScoreAxis,
+} from './lead-axis-score.entity';
+import { LeadScore } from './lead-score.entity';
 
 const GOOGLE_PLACES_URL = 'https://places.googleapis.com/v1/places:searchText';
 const GOOGLE_PLACES_FIELD_MASK = [
@@ -39,8 +45,10 @@ type TimelinePoint = {
 
 type BreakdownItem = {
   category: string;
-  opportunity: number;
-  percentage: number;
+  opportunity: number | null;
+  percentage: number | null;
+  weightedScore?: number | null;
+  isAvailable?: boolean;
 };
 
 type GooglePlace = {
@@ -66,11 +74,20 @@ export class LeadsService {
   constructor(
     @InjectRepository(Lead)
     private readonly leadsRepository: Repository<Lead>,
+
+    @InjectRepository(LeadScore)
+    private readonly leadScoresRepository: Repository<LeadScore>,
+
     private readonly configService: ConfigService,
-  ) {}
+  ) { }
 
   findAll(): Promise<Lead[]> {
-    return this.leadsRepository.find();
+    return this.leadsRepository.find({
+      relations: {
+        contacts: true,
+        scores: true,
+      },
+    });
   }
 
   async findOne(id: string): Promise<Lead> {
@@ -80,6 +97,7 @@ export class LeadsService {
         contacts: true,
         analyses: true,
         scores: true,
+        axisScores: true,
       },
     });
 
@@ -251,79 +269,104 @@ export class LeadsService {
    * derived from a string hash of lead id + day index (no Math.random()).
    */
   async getTimeline(id: string): Promise<TimelinePoint[]> {
-    const lead = this.findMockLead(id);
-    if (!lead) {
-      await this.findOne(id);
-      return [];
-    }
-    const { digitalMaturity, opportunity, analysisCost } = lead.currentScore;
-    const points: TimelinePoint[] = [];
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const mockLead = this.findMockLead(id);
 
-    for (let dayIndex = 0; dayIndex < 30; dayIndex++) {
-      const date = new Date(today);
-      date.setDate(today.getDate() - (29 - dayIndex));
-      const dateStr = this.formatLocalDate(date);
-
-      // Progress 0→1 over the window; last day equals currentScore exactly.
-      const progress = dayIndex / 29;
-      const wobble = (this.deterministicFactor(id, dayIndex) - 0.5) * 0.2;
-
-      if (dayIndex === 29) {
-        points.push({
-          date: dateStr,
+    if (mockLead) {
+      const { digitalMaturity, opportunity, analysisCost } = mockLead.currentScore;
+      return [
+        {
+          date: this.formatLocalDate(new Date()),
           digitalMaturity,
           opportunity,
           cost: analysisCost,
-        });
-        continue;
-      }
-
-      const maturityBase = digitalMaturity * (0.7 + 0.3 * progress);
-      const opportunityBase = opportunity * (0.7 + 0.3 * progress);
-      const costBase = analysisCost * (0.7 + 0.3 * progress);
-
-      points.push({
-        date: dateStr,
-        digitalMaturity: Math.max(0, Math.round(maturityBase * (1 + wobble))),
-        opportunity: Math.max(
-          0,
-          Math.round(opportunityBase * (1 + wobble) * 100) / 100,
-        ),
-        cost: Math.max(0, Math.round(costBase * (1 + wobble))),
-      });
+        },
+      ];
     }
 
-    return points;
+    await this.findOne(id);
+
+    const dailyScores = await this.leadScoresRepository.find({
+      where: {
+        lead: { id },
+        periodType: 'daily',
+      },
+      order: {
+        scoreDate: 'ASC',
+      },
+    });
+
+    return dailyScores.map((score) => ({
+      date: this.formatLocalDate(new Date(score.scoreDate)), 
+      digitalMaturity: Number(score.digitalMaturity ?? 0),
+      opportunity: Number(score.opportunity ?? 0),
+      cost: Number(score.analysisCost ?? 0),
+    }));
   }
 
   /**
-   * Splits current digital-maturity and opportunity scores across the four
-   * analysis modules. Percentages are normalized to sum to exactly 100.
+   * Returns persisted axis rows for DB leads. Legacy mock IDs keep their
+   * deterministic generated breakdown for backward compatibility.
    */
   async getBreakdown(id: string): Promise<{
     digitalMaturity: BreakdownItem[];
     opportunity: BreakdownItem[];
   }> {
-    const lead = this.findMockLead(id);
-    if (!lead) {
-      await this.findOne(id);
-      return { digitalMaturity: [], opportunity: [] };
+    const mockLead = this.findMockLead(id);
+    if (!mockLead) {
+      const lead = await this.findOne(id);
+      return {
+        digitalMaturity: this.mapAxisScores(
+          lead.axisScores ?? [],
+          AxisScoreType.DIGITAL_MATURITY,
+        ),
+        opportunity: this.mapAxisScores(
+          lead.axisScores ?? [],
+          AxisScoreType.OPPORTUNITY,
+        ),
+      };
     }
 
     return {
       digitalMaturity: this.buildModuleBreakdown(
         id,
         'maturity',
-        lead.currentScore.digitalMaturity,
+        mockLead.currentScore.digitalMaturity,
       ),
       opportunity: this.buildModuleBreakdown(
         id,
         'opportunity',
-        lead.currentScore.opportunity,
+        mockLead.currentScore.opportunity,
       ),
     };
+  }
+
+  private mapAxisScores(
+    axisScores: LeadAxisScore[],
+    scoreType: AxisScoreType,
+  ): BreakdownItem[] {
+    const axisOrder: LeadScoreAxis[] = [
+      LeadScoreAxis.GMB,
+      LeadScoreAxis.WEBSITE,
+      LeadScoreAxis.SEO,
+      LeadScoreAxis.SOCIAL,
+    ];
+
+    return axisScores
+      .filter((axisScore) => axisScore.scoreType === scoreType)
+      .sort(
+        (left, right) =>
+          axisOrder.indexOf(left.axis) - axisOrder.indexOf(right.axis),
+      )
+      .map((axisScore) => {
+        const weight = this.decimalOrNull(axisScore.weight);
+        return {
+          category: axisScore.axis,
+          opportunity: this.decimalOrNull(axisScore.score),
+          percentage: weight === null ? null : weight * 100,
+          weightedScore: this.decimalOrNull(axisScore.weightedScore),
+          isAvailable: axisScore.isAvailable,
+        };
+      });
   }
 
   /**
@@ -417,6 +460,14 @@ export class LeadsService {
 
   private numberOrNull(value: number | undefined): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
+  private decimalOrNull(value: string | null): number | null {
+    if (value === null) {
+      return null;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
   }
 
   private delay(milliseconds: number): Promise<void> {

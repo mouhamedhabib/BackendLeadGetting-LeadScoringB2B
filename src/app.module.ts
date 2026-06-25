@@ -12,6 +12,7 @@ import { LeadAnalysis } from './leads/lead-analysis.entity';
 import { LeadContact } from './leads/lead-contact.entity';
 import { Lead } from './leads/lead.entity';
 import { LeadScore } from './leads/lead-score.entity';
+import { LeadAxisScore } from './leads/lead-axis-score.entity';
 
 @Module({
   imports: [
@@ -21,7 +22,7 @@ import { LeadScore } from './leads/lead-score.entity';
       useFactory: (configService: ConfigService) => ({
         type: 'postgres',
         url: configService.getOrThrow<string>('DATABASE_URL'),
-        entities: [Lead, LeadContact, LeadAnalysis, LeadScore],
+        entities: [Lead, LeadContact, LeadAnalysis, LeadScore, LeadAxisScore],
         synchronize: false,
       }),
     }),

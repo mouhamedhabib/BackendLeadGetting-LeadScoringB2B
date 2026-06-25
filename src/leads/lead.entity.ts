@@ -9,6 +9,7 @@ import {
 import { LeadAnalysis } from './lead-analysis.entity';
 import { LeadContact } from './lead-contact.entity';
 import { LeadScore } from './lead-score.entity';
+import { LeadAxisScore } from './lead-axis-score.entity';
 
 export enum LeadState {
   RAW = 'RAW',
@@ -67,4 +68,7 @@ export class Lead {
 
   @OneToMany(() => LeadScore, (score) => score.lead)
   scores: LeadScore[];
+
+  @OneToMany(() => LeadAxisScore, (axisScore) => axisScore.lead)
+  axisScores: LeadAxisScore[];
 }

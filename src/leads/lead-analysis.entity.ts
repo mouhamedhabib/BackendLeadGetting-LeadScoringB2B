@@ -9,6 +9,7 @@ import {
 } from 'typeorm';
 import { Lead } from './lead.entity';
 import { LeadScore } from './lead-score.entity';
+import { LeadAxisScore } from './lead-axis-score.entity';
 
 @Entity({ name: 'lead_analysis' })
 @Index('IDX_lead_analysis_lead_id', ['leadId'])
@@ -62,4 +63,7 @@ export class LeadAnalysis {
 
   @OneToMany(() => LeadScore, (score) => score.analysis)
   scores: LeadScore[];
+
+  @OneToMany(() => LeadAxisScore, (axisScore) => axisScore.analysis)
+  axisScores: LeadAxisScore[];
 }

@@ -14,6 +14,7 @@ import { Lead } from './lead.entity';
 @Index('IDX_lead_scores_lead_id', ['leadId'])
 @Index('IDX_lead_scores_analysis_id', ['analysisId'])
 @Index('IDX_lead_scores_period_type', ['periodType'])
+@Index('idx_lead_scores_date', ['leadId', 'scoreDate'])
 export class LeadScore {
   @PrimaryGeneratedColumn({ type: 'int' })
   id: number;
@@ -52,6 +53,9 @@ export class LeadScore {
 
   @Column({ name: 'analysis_cost', type: 'decimal', nullable: true })
   analysisCost: string | null;
+
+  @Column({ name: 'score_date', type: 'date' })
+  scoreDate: string;
 
   @CreateDateColumn()
   createdAt: Date;
