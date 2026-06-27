@@ -7,7 +7,7 @@ import { LeadAxisScore } from './lead-axis-score.entity';
 import { LeadScore } from './lead-score.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Lead, LeadAxisScore, LeadScore])], 
+  imports: [TypeOrmModule.forFeature([Lead, LeadAxisScore, LeadScore])],
   controllers: [LeadsController],
   providers: [LeadsService],
 })

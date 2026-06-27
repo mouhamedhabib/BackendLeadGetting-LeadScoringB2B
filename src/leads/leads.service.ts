@@ -6,7 +6,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
-import { Lead } from './lead.entity';
+import { Lead, LeadState } from './lead.entity';
 import {
   AxisScoreType,
   LeadAxisScore,
@@ -69,6 +69,35 @@ type GooglePlacesResponse = {
   places?: GooglePlace[];
 };
 
+type LeadMapPriority = 'high' | 'medium' | 'low' | 'unknown';
+type LeadMapStatus = 'scored' | 'enriched' | 'raw' | 'failed';
+
+export type LeadMapFilters = {
+  scoreMin?: number;
+  scoreMax?: number;
+  priority?: LeadMapPriority;
+  state?: LeadState;
+  status?: LeadMapStatus;
+  searchQuery?: string;
+};
+
+export type LeadMapMarker = {
+  id: string;
+  name: string | null;
+  address: string | null;
+  phone: string | null;
+  website: string | null;
+  rating: number | null;
+  userRatingsTotal: number | null;
+  lat: number;
+  lng: number;
+  searchQuery: string;
+  state: LeadState;
+  score: number | null;
+  priority: LeadMapPriority;
+  status: LeadMapStatus;
+};
+
 @Injectable()
 export class LeadsService {
   constructor(
@@ -79,7 +108,7 @@ export class LeadsService {
     private readonly leadScoresRepository: Repository<LeadScore>,
 
     private readonly configService: ConfigService,
-  ) { }
+  ) {}
 
   findAll(): Promise<Lead[]> {
     return this.leadsRepository.find({
@@ -88,6 +117,43 @@ export class LeadsService {
         scores: true,
       },
     });
+  }
+
+  async findMapMarkers(filters: LeadMapFilters = {}): Promise<LeadMapMarker[]> {
+    const leads = await this.leadsRepository.find({
+      where: filters.searchQuery ? { searchQuery: filters.searchQuery } : {},
+      relations: {
+        scores: true,
+      },
+    });
+
+    return leads
+      .flatMap((lead) => {
+        if (!this.isFiniteNumber(lead.lat) || !this.isFiniteNumber(lead.lng)) {
+          return [];
+        }
+
+        const score = this.latestDisplayScore(lead.scores ?? []);
+        const marker: LeadMapMarker = {
+          id: lead.id,
+          name: lead.name,
+          address: lead.address,
+          phone: lead.phone,
+          website: lead.website,
+          rating: lead.rating,
+          userRatingsTotal: lead.userRatingsTotal,
+          lat: lead.lat,
+          lng: lead.lng,
+          searchQuery: lead.searchQuery,
+          state: lead.state,
+          score,
+          priority: this.priorityFromScore(score),
+          status: this.statusFromState(lead.state),
+        };
+
+        return [marker];
+      })
+      .filter((marker) => this.matchesMapFilters(marker, filters));
   }
 
   async findOne(id: string): Promise<Lead> {
@@ -272,7 +338,8 @@ export class LeadsService {
     const mockLead = this.findMockLead(id);
 
     if (mockLead) {
-      const { digitalMaturity, opportunity, analysisCost } = mockLead.currentScore;
+      const { digitalMaturity, opportunity, analysisCost } =
+        mockLead.currentScore;
       return [
         {
           date: this.formatLocalDate(new Date()),
@@ -296,7 +363,7 @@ export class LeadsService {
     });
 
     return dailyScores.map((score) => ({
-      date: this.formatLocalDate(new Date(score.scoreDate)), 
+      date: this.formatLocalDate(new Date(score.scoreDate)),
       digitalMaturity: Number(score.digitalMaturity ?? 0),
       opportunity: Number(score.opportunity ?? 0),
       cost: Number(score.analysisCost ?? 0),
@@ -462,12 +529,115 @@ export class LeadsService {
     return typeof value === 'number' && Number.isFinite(value) ? value : null;
   }
 
+  private isFiniteNumber(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value);
+  }
+
   private decimalOrNull(value: string | null): number | null {
     if (value === null) {
       return null;
     }
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private latestDisplayScore(scores: LeadScore[]): number | null {
+    const latest = scores
+      .filter(
+        (score) =>
+          this.decimalOrNull(score.digitalMaturity) !== null ||
+          this.decimalOrNull(score.opportunity) !== null,
+      )
+      .sort((left, right) => {
+        const byDate = right.scoreDate.localeCompare(left.scoreDate);
+        if (byDate !== 0) {
+          return byDate;
+        }
+
+        return right.id - left.id;
+      })[0];
+
+    if (!latest) {
+      return null;
+    }
+
+    const values = [
+      this.decimalOrNull(latest.digitalMaturity),
+      this.decimalOrNull(latest.opportunity),
+    ].filter((value): value is number => value !== null);
+
+    if (values.length === 0) {
+      return null;
+    }
+
+    const average =
+      values.reduce((total, value) => total + value, 0) / values.length;
+    return Math.round(average * 10) / 10;
+  }
+
+  private priorityFromScore(score: number | null): LeadMapPriority {
+    if (score === null) {
+      return 'unknown';
+    }
+
+    if (score >= 70) {
+      return 'high';
+    }
+
+    if (score >= 40) {
+      return 'medium';
+    }
+
+    return 'low';
+  }
+
+  private statusFromState(state: LeadState): LeadMapStatus {
+    if (state === LeadState.SCORED) {
+      return 'scored';
+    }
+
+    if (state === LeadState.ENRICHED) {
+      return 'enriched';
+    }
+
+    if (state === LeadState.FAILED) {
+      return 'failed';
+    }
+
+    return 'raw';
+  }
+
+  private matchesMapFilters(
+    marker: LeadMapMarker,
+    filters: LeadMapFilters,
+  ): boolean {
+    if (filters.state && marker.state !== filters.state) {
+      return false;
+    }
+
+    if (filters.status && marker.status !== filters.status) {
+      return false;
+    }
+
+    if (filters.priority && marker.priority !== filters.priority) {
+      return false;
+    }
+
+    if (
+      filters.scoreMin !== undefined &&
+      (marker.score === null || marker.score < filters.scoreMin)
+    ) {
+      return false;
+    }
+
+    if (
+      filters.scoreMax !== undefined &&
+      (marker.score === null || marker.score > filters.scoreMax)
+    ) {
+      return false;
+    }
+
+    return true;
   }
 
   private delay(milliseconds: number): Promise<void> {
