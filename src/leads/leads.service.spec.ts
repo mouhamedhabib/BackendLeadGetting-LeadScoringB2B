@@ -9,6 +9,11 @@ import {
   LeadScoreAxis,
 } from './lead-axis-score.entity';
 import { LeadScore } from './lead-score.entity';
+import {
+  ScrapingJob,
+  ScrapingJobStatus,
+  ScrapingJobType,
+} from './scraping-job.entity';
 
 describe('LeadsService', () => {
   let service: LeadsService;
@@ -20,6 +25,11 @@ describe('LeadsService', () => {
   };
   let leadScoresRepository: {
     find: jest.Mock;
+  };
+  let scrapingJobsRepository: {
+    create: jest.Mock;
+    find: jest.Mock;
+    save: jest.Mock;
   };
   let configService: { get: jest.Mock };
 
@@ -33,12 +43,29 @@ describe('LeadsService', () => {
     leadScoresRepository = {
       find: jest.fn().mockResolvedValue([]),
     };
+    scrapingJobsRepository = {
+      create: jest.fn((job: Partial<ScrapingJob>) => job),
+      find: jest.fn().mockResolvedValue([]),
+      save: jest.fn((jobs: Partial<ScrapingJob>[]) =>
+        Promise.resolve(
+          jobs.map((job, index) => ({
+            id: index + 1,
+            leadId: job.leadId,
+            jobType: job.jobType,
+            status: job.status,
+            source: job.source,
+            trigger: job.trigger,
+          })),
+        ),
+      ),
+    };
     configService = {
       get: jest.fn().mockReturnValue('test-api-key'),
     };
     service = new LeadsService(
       repository as unknown as Repository<Lead>,
       leadScoresRepository as unknown as Repository<LeadScore>,
+      scrapingJobsRepository as unknown as Repository<ScrapingJob>,
       configService as unknown as ConfigService,
     );
   });
@@ -126,6 +153,177 @@ describe('LeadsService', () => {
       ],
       ['id'],
     );
+  });
+
+  it('creates pending scraping jobs for a lead without active duplicates', async () => {
+    repository.findOne.mockResolvedValue({ id: 'place-1' });
+
+    await expect(
+      service.createScrapingJobsForLead('place-1'),
+    ).resolves.toEqual({
+      leadId: 'place-1',
+      createdJobs: [
+        {
+          id: 1,
+          leadId: 'place-1',
+          jobType: ScrapingJobType.WEBSITE,
+          status: ScrapingJobStatus.PENDING,
+          source: 'website',
+          trigger: 'manual',
+        },
+        {
+          id: 2,
+          leadId: 'place-1',
+          jobType: ScrapingJobType.SEO,
+          status: ScrapingJobStatus.PENDING,
+          source: 'website',
+          trigger: 'manual',
+        },
+        {
+          id: 3,
+          leadId: 'place-1',
+          jobType: ScrapingJobType.CONTACTS,
+          status: ScrapingJobStatus.PENDING,
+          source: 'website',
+          trigger: 'manual',
+        },
+        {
+          id: 4,
+          leadId: 'place-1',
+          jobType: ScrapingJobType.SOCIAL,
+          status: ScrapingJobStatus.PENDING,
+          source: 'fastapi_scraper',
+          trigger: 'manual',
+        },
+      ],
+      skippedJobs: [],
+      message: 'Created 4 scraping job(s); skipped 0 active job(s).',
+    });
+    expect(scrapingJobsRepository.find).toHaveBeenCalledWith({
+      where: {
+        leadId: 'place-1',
+        jobType: expect.any(Object),
+        status: expect.any(Object),
+      },
+    });
+    expect(scrapingJobsRepository.save).toHaveBeenCalledWith([
+      {
+        leadId: 'place-1',
+        jobType: ScrapingJobType.WEBSITE,
+        status: ScrapingJobStatus.PENDING,
+        source: 'website',
+        trigger: 'manual',
+      },
+      {
+        leadId: 'place-1',
+        jobType: ScrapingJobType.SEO,
+        status: ScrapingJobStatus.PENDING,
+        source: 'website',
+        trigger: 'manual',
+      },
+      {
+        leadId: 'place-1',
+        jobType: ScrapingJobType.CONTACTS,
+        status: ScrapingJobStatus.PENDING,
+        source: 'website',
+        trigger: 'manual',
+      },
+      {
+        leadId: 'place-1',
+        jobType: ScrapingJobType.SOCIAL,
+        status: ScrapingJobStatus.PENDING,
+        source: 'fastapi_scraper',
+        trigger: 'manual',
+      },
+    ]);
+  });
+
+  it('skips existing active scraping jobs for the same lead and job type', async () => {
+    repository.findOne.mockResolvedValue({ id: 'place-1' });
+    scrapingJobsRepository.find.mockResolvedValue([
+      {
+        id: 10,
+        leadId: 'place-1',
+        jobType: ScrapingJobType.WEBSITE,
+        status: ScrapingJobStatus.RUNNING,
+        source: 'website',
+        trigger: 'manual',
+      },
+      {
+        id: 11,
+        leadId: 'place-1',
+        jobType: ScrapingJobType.SOCIAL,
+        status: ScrapingJobStatus.PENDING,
+        source: 'fastapi_scraper',
+        trigger: 'manual',
+      },
+    ]);
+    scrapingJobsRepository.save.mockImplementation(
+      (jobs: Partial<ScrapingJob>[]) =>
+        Promise.resolve(
+          jobs.map((job, index) => ({
+            id: index + 20,
+            leadId: job.leadId,
+            jobType: job.jobType,
+            status: job.status,
+            source: job.source,
+            trigger: job.trigger,
+          })),
+        ),
+    );
+
+    await expect(
+      service.createScrapingJobsForLead('place-1'),
+    ).resolves.toEqual({
+      leadId: 'place-1',
+      createdJobs: [
+        {
+          id: 20,
+          leadId: 'place-1',
+          jobType: ScrapingJobType.SEO,
+          status: ScrapingJobStatus.PENDING,
+          source: 'website',
+          trigger: 'manual',
+        },
+        {
+          id: 21,
+          leadId: 'place-1',
+          jobType: ScrapingJobType.CONTACTS,
+          status: ScrapingJobStatus.PENDING,
+          source: 'website',
+          trigger: 'manual',
+        },
+      ],
+      skippedJobs: [
+        {
+          id: 10,
+          leadId: 'place-1',
+          jobType: ScrapingJobType.WEBSITE,
+          status: ScrapingJobStatus.RUNNING,
+          source: 'website',
+          trigger: 'manual',
+        },
+        {
+          id: 11,
+          leadId: 'place-1',
+          jobType: ScrapingJobType.SOCIAL,
+          status: ScrapingJobStatus.PENDING,
+          source: 'fastapi_scraper',
+          trigger: 'manual',
+        },
+      ],
+      message: 'Created 2 scraping job(s); skipped 2 active job(s).',
+    });
+  });
+
+  it('does not create scraping jobs for a missing lead', async () => {
+    repository.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.createScrapingJobsForLead('missing'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(scrapingJobsRepository.find).not.toHaveBeenCalled();
+    expect(scrapingJobsRepository.save).not.toHaveBeenCalled();
   });
 
   it('keeps the deterministic timeline mock available', async () => {

@@ -5,9 +5,12 @@ import { LeadsController } from './leads.controller';
 import { LeadsService } from './leads.service';
 import { LeadAxisScore } from './lead-axis-score.entity';
 import { LeadScore } from './lead-score.entity';
+import { ScrapingJob } from './scraping-job.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Lead, LeadAxisScore, LeadScore])],
+  imports: [
+    TypeOrmModule.forFeature([Lead, LeadAxisScore, LeadScore, ScrapingJob]),
+  ],
   controllers: [LeadsController],
   providers: [LeadsService],
 })

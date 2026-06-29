@@ -57,6 +57,11 @@ export class LeadsController {
     return this.leadsService.getBreakdown(id);
   }
 
+  @Post(':leadId/scraping-jobs')
+  createScrapingJobsForLead(@Param('leadId') leadId: string) {
+    return this.leadsService.createScrapingJobsForLead(leadId);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.leadsService.findOne(id);

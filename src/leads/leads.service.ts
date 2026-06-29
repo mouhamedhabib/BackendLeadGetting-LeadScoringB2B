@@ -13,6 +13,11 @@ import {
   LeadScoreAxis,
 } from './lead-axis-score.entity';
 import { LeadScore } from './lead-score.entity';
+import {
+  ScrapingJob,
+  ScrapingJobStatus,
+  ScrapingJobType,
+} from './scraping-job.entity';
 
 const GOOGLE_PLACES_URL = 'https://places.googleapis.com/v1/places:searchText';
 const GOOGLE_PLACES_FIELD_MASK = [
@@ -71,6 +76,14 @@ type GooglePlacesResponse = {
 
 type LeadMapPriority = 'high' | 'medium' | 'low' | 'unknown';
 type LeadMapStatus = 'scored' | 'enriched' | 'raw' | 'failed';
+type ScrapingJobInfo = {
+  id: number;
+  leadId: string;
+  jobType: ScrapingJobType;
+  status: ScrapingJobStatus;
+  source: string | null;
+  trigger: string | null;
+};
 
 export type LeadMapFilters = {
   scoreMin?: number;
@@ -98,6 +111,25 @@ export type LeadMapMarker = {
   status: LeadMapStatus;
 };
 
+export type CreateScrapingJobsForLeadResult = {
+  leadId: string;
+  createdJobs: ScrapingJobInfo[];
+  skippedJobs: ScrapingJobInfo[];
+  message: string;
+};
+
+const SCRAPING_JOB_TYPES_TO_CREATE = [
+  ScrapingJobType.WEBSITE,
+  ScrapingJobType.SEO,
+  ScrapingJobType.CONTACTS,
+  ScrapingJobType.SOCIAL,
+] as const;
+const ACTIVE_SCRAPING_JOB_STATUSES = [
+  ScrapingJobStatus.PENDING,
+  ScrapingJobStatus.RUNNING,
+] as const;
+const MANUAL_SCRAPING_TRIGGER = 'manual';
+
 @Injectable()
 export class LeadsService {
   constructor(
@@ -106,6 +138,9 @@ export class LeadsService {
 
     @InjectRepository(LeadScore)
     private readonly leadScoresRepository: Repository<LeadScore>,
+
+    @InjectRepository(ScrapingJob)
+    private readonly scrapingJobsRepository: Repository<ScrapingJob>,
 
     private readonly configService: ConfigService,
   ) {}
@@ -212,6 +247,53 @@ export class LeadsService {
       const savedLead = savedById.get(lead.id);
       return savedLead ? [savedLead] : [];
     });
+  }
+
+  async createScrapingJobsForLead(
+    leadId: string,
+  ): Promise<CreateScrapingJobsForLeadResult> {
+    const lead = await this.leadsRepository.findOne({
+      where: { id: leadId },
+    });
+
+    if (!lead) {
+      throw new NotFoundException(`Lead with id "${leadId}" not found`);
+    }
+
+    const activeJobs = await this.scrapingJobsRepository.find({
+      where: {
+        leadId,
+        jobType: In([...SCRAPING_JOB_TYPES_TO_CREATE]),
+        status: In([...ACTIVE_SCRAPING_JOB_STATUSES]),
+      },
+    });
+    const activeJobsByType = new Map(
+      activeJobs.map((job) => [job.jobType, job]),
+    );
+
+    const jobsToCreate = SCRAPING_JOB_TYPES_TO_CREATE.filter(
+      (jobType) => !activeJobsByType.has(jobType),
+    ).map((jobType) =>
+      this.scrapingJobsRepository.create({
+        leadId,
+        jobType,
+        status: ScrapingJobStatus.PENDING,
+        source: this.sourceForScrapingJobType(jobType),
+        trigger: MANUAL_SCRAPING_TRIGGER,
+      }),
+    );
+
+    const createdJobs =
+      jobsToCreate.length > 0
+        ? await this.scrapingJobsRepository.save(jobsToCreate)
+        : [];
+
+    return {
+      leadId,
+      createdJobs: createdJobs.map((job) => this.toScrapingJobInfo(job)),
+      skippedJobs: activeJobs.map((job) => this.toScrapingJobInfo(job)),
+      message: `Created ${createdJobs.length} scraping job(s); skipped ${activeJobs.length} active job(s).`,
+    };
   }
 
   private getMockLeads() {
@@ -527,6 +609,29 @@ export class LeadsService {
 
   private numberOrNull(value: number | undefined): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
+  private sourceForScrapingJobType(jobType: ScrapingJobType): string {
+    if (
+      jobType === ScrapingJobType.WEBSITE ||
+      jobType === ScrapingJobType.SEO ||
+      jobType === ScrapingJobType.CONTACTS
+    ) {
+      return 'website';
+    }
+
+    return 'fastapi_scraper';
+  }
+
+  private toScrapingJobInfo(job: ScrapingJob): ScrapingJobInfo {
+    return {
+      id: job.id,
+      leadId: job.leadId,
+      jobType: job.jobType,
+      status: job.status,
+      source: job.source,
+      trigger: job.trigger,
+    };
   }
 
   private isFiniteNumber(value: unknown): value is number {
