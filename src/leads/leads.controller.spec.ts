@@ -1,10 +1,12 @@
 import { BadRequestException } from '@nestjs/common';
 import { LeadsController } from './leads.controller';
 import { LeadsService } from './leads.service';
+import { ScrapingJobType } from './scraping-job.entity';
 
 describe('LeadsController', () => {
   const leadsService = {
     createScrapingJobsForLead: jest.fn(),
+    getLeadIntelligence: jest.fn(),
     search: jest.fn(),
   };
   const controller = new LeadsController(
@@ -29,6 +31,7 @@ describe('LeadsController', () => {
   it('delegates scraping job creation to the service', async () => {
     const result = {
       leadId: 'place-1',
+      websiteMissing: false,
       createdJobs: [],
       skippedJobs: [],
       message: 'Created 0 scraping job(s); skipped 0 active job(s).',
@@ -40,6 +43,66 @@ describe('LeadsController', () => {
     ).resolves.toBe(result);
     expect(leadsService.createScrapingJobsForLead).toHaveBeenCalledWith(
       'place-1',
+      undefined,
     );
+  });
+
+  it('passes explicit scraping job types to the service', async () => {
+    const result = {
+      leadId: 'place-1',
+      websiteMissing: false,
+      createdJobs: [],
+      skippedJobs: [],
+      message: 'Created 0 scraping job(s); skipped 0 active job(s).',
+    };
+    leadsService.createScrapingJobsForLead.mockResolvedValue(result);
+
+    await expect(
+      controller.createScrapingJobsForLead('place-1', {
+        jobTypes: ['WEBSITE', 'seo'],
+      }),
+    ).resolves.toBe(result);
+    expect(leadsService.createScrapingJobsForLead).toHaveBeenCalledWith(
+      'place-1',
+      [ScrapingJobType.WEBSITE, ScrapingJobType.SEO],
+    );
+  });
+
+  it('rejects invalid scraping job types', () => {
+    expect(() =>
+      controller.createScrapingJobsForLead('place-1', {
+        jobTypes: ['WEBSITE', 'UNKNOWN'],
+      }),
+    ).toThrow(BadRequestException);
+    expect(leadsService.createScrapingJobsForLead).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-array scraping job types', () => {
+    expect(() =>
+      controller.createScrapingJobsForLead('place-1', {
+        jobTypes: 'WEBSITE',
+      }),
+    ).toThrow(BadRequestException);
+    expect(leadsService.createScrapingJobsForLead).not.toHaveBeenCalled();
+  });
+
+  it('delegates lead intelligence lookup to the service', async () => {
+    const result = {
+      leadId: 'place-1',
+      lead: {
+        id: 'place-1',
+        name: 'Demo Bakery',
+        website: 'https://demo.example',
+        state: 'ENRICHED',
+      },
+      latestAnalysis: null,
+      latestRawResult: null,
+    };
+    leadsService.getLeadIntelligence.mockResolvedValue(result);
+
+    await expect(controller.getLeadIntelligence('place-1')).resolves.toBe(
+      result,
+    );
+    expect(leadsService.getLeadIntelligence).toHaveBeenCalledWith('place-1');
   });
 });

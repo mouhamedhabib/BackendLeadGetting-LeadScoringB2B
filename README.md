@@ -25,6 +25,30 @@
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
 
+## Lead Collection and Website Jobs
+
+Implemented local NestJS routes use the unprefixed `/leads` base path.
+
+- `POST /leads/search?query=<query>` calls the configured Places provider, upserts saved leads by `google_place_id`, and returns each saved lead with scraping-job status.
+- `PLACES_PROVIDER=google | curated` selects the provider. If unset, the default remains `google`.
+- The Google provider uses Google Places Text Search and is still supported through `GOOGLE_PLACES_API_KEY`.
+- The curated provider exists for local development and graduation-demo validation because Google Places requires billing. It returns exactly 20 deterministic, realistic multi-market business leads without calling Google.
+- Curated leads cover Tunisia, France, and Belgium across bakery, restaurant, hotel, dental clinic, digital agency, real estate agency, plumber, beauty salon, car repair, and law office categories.
+- Curated records avoid `example.com` and localhost websites; most records use reachable public websites, while a few intentionally omit `website` to exercise `websiteMissing`.
+- Saved leads store `name`, `address`, `phone`, `website`, `rating`, `userRatingsTotal`, `lat`, `lng`, `searchQuery`, and `state`.
+- Search-triggered enrichment creates only a `WEBSITE` scraping job for leads that have a website.
+- Leads without a website are still saved and return `websiteMissing: true`; no default `WEBSITE` job is created for them.
+- `POST /leads/:leadId/scraping-jobs` defaults to `WEBSITE` only.
+- Passing `{ "jobTypes": ["WEBSITE", "SEO"] }` creates only the requested types.
+- Active duplicate prevention checks `PENDING` and `RUNNING` jobs and serializes same-lead creation in a transaction with a lead row lock.
+
+The curated provider uses the same database persistence and scraping-job pipeline as Google results. Example local validation:
+
+```bash
+PLACES_PROVIDER=curated npm run start
+curl -sS -X POST 'http://localhost:3001/leads/search?query=bakery%20Tunis'
+```
+
 ## Project setup
 
 ```bash

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  Body,
   Controller,
   Get,
   Param,
@@ -8,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { LeadState } from './lead.entity';
 import { LeadMapFilters, LeadsService } from './leads.service';
+import { ScrapingJobType } from './scraping-job.entity';
 
 type MapQuery = {
   scoreMin?: string;
@@ -16,6 +18,10 @@ type MapQuery = {
   state?: string;
   status?: string;
   searchQuery?: string;
+};
+
+type CreateScrapingJobsBody = {
+  jobTypes?: unknown;
 };
 
 const MAP_PRIORITIES = ['high', 'medium', 'low', 'unknown'] as const;
@@ -58,8 +64,19 @@ export class LeadsController {
   }
 
   @Post(':leadId/scraping-jobs')
-  createScrapingJobsForLead(@Param('leadId') leadId: string) {
-    return this.leadsService.createScrapingJobsForLead(leadId);
+  createScrapingJobsForLead(
+    @Param('leadId') leadId: string,
+    @Body() body?: CreateScrapingJobsBody,
+  ) {
+    return this.leadsService.createScrapingJobsForLead(
+      leadId,
+      this.parseJobTypes(body?.jobTypes),
+    );
+  }
+
+  @Get(':leadId/intelligence')
+  getLeadIntelligence(@Param('leadId') leadId: string) {
+    return this.leadsService.getLeadIntelligence(leadId);
   }
 
   @Get(':id')
@@ -149,5 +166,34 @@ export class LeadsController {
     }
 
     return parsed;
+  }
+
+  private parseJobTypes(value: unknown): ScrapingJobType[] | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+
+    if (!Array.isArray(value)) {
+      throw new BadRequestException('jobTypes must be an array');
+    }
+
+    const jobTypes = value.map((item) =>
+      typeof item === 'string' ? item.trim().toUpperCase() : item,
+    );
+
+    if (
+      jobTypes.length === 0 ||
+      jobTypes.some(
+        (jobType) =>
+          typeof jobType !== 'string' ||
+          !Object.values(ScrapingJobType).includes(jobType as ScrapingJobType),
+      )
+    ) {
+      throw new BadRequestException(
+        'jobTypes must contain one or more valid job types: WEBSITE, SEO, CONTACTS, SOCIAL, FULL',
+      );
+    }
+
+    return [...new Set(jobTypes)] as ScrapingJobType[];
   }
 }
