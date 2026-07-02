@@ -203,7 +203,9 @@ export class ReportsService {
     return score.createdAt.getTime();
   }
 
-  private numberOrNull(value: string | number | null | undefined): number | null {
+  private numberOrNull(
+    value: string | number | null | undefined,
+  ): number | null {
     if (value === null || value === undefined) {
       return null;
     }

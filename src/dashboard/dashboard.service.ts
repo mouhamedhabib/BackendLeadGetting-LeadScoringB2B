@@ -98,9 +98,7 @@ export class DashboardService {
     const end = this.parseDate(endDate);
 
     if (start > end) {
-      throw new BadRequestException(
-        'start_date must not be after end_date.',
-      );
+      throw new BadRequestException('start_date must not be after end_date.');
     }
   }
 
@@ -168,8 +166,7 @@ export class DashboardService {
       {
         title: 'Status Update Frequency',
         value: '18 / hr',
-        description:
-          'Pipeline stage updates emitted for active lead records.',
+        description: 'Pipeline stage updates emitted for active lead records.',
         target: '>= 12 / hr',
         status: 'Stable',
         statusTone: 'stable',
@@ -207,7 +204,9 @@ export class DashboardService {
       const cursor = new Date(rangeStart);
       let index = 0;
       while (cursor <= rangeEnd) {
-        points.push(this.buildRealtimePoint(startDate, endDate, index, cursor, true));
+        points.push(
+          this.buildRealtimePoint(startDate, endDate, index, cursor, true),
+        );
         cursor.setHours(cursor.getHours() + 1);
         index += 1;
       }
@@ -218,7 +217,9 @@ export class DashboardService {
     cursor.setHours(0, 0, 0, 0);
     let index = 0;
     while (cursor <= end) {
-      points.push(this.buildRealtimePoint(startDate, endDate, index, cursor, false));
+      points.push(
+        this.buildRealtimePoint(startDate, endDate, index, cursor, false),
+      );
       cursor.setDate(cursor.getDate() + 1);
       index += 1;
     }
@@ -257,10 +258,15 @@ export class DashboardService {
   private buildAlerts(startDate: string, endDate: string): DashboardAlert[] {
     const startMs = this.parseDate(startDate).getTime();
     const endMs = this.parseDate(endDate).getTime() + 86_399_999;
-    const count = 3 + Math.floor(this.deterministicFactor(`${startDate}:${endDate}`, 99) * 4);
+    const count =
+      3 +
+      Math.floor(this.deterministicFactor(`${startDate}:${endDate}`, 99) * 4);
 
     return ALERT_TEMPLATES.slice(0, count).map((template, index) => {
-      const ratio = this.deterministicFactor(`${startDate}:${endDate}:alert`, index);
+      const ratio = this.deterministicFactor(
+        `${startDate}:${endDate}:alert`,
+        index,
+      );
       const timestampMs = Math.round(startMs + ratio * (endMs - startMs));
       return {
         ...template,

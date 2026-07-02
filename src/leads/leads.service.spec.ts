@@ -2,6 +2,7 @@ import { NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { Lead, LeadState } from './lead.entity';
+import { LeadAnalysis } from './lead-analysis.entity';
 import { LeadsService } from './leads.service';
 import {
   AxisScoreType,
@@ -9,6 +10,16 @@ import {
   LeadScoreAxis,
 } from './lead-axis-score.entity';
 import { LeadScore } from './lead-score.entity';
+import {
+  ScrapingJob,
+  ScrapingJobStatus,
+  ScrapingJobType,
+} from './scraping-job.entity';
+import { ScrapingRawResult } from './scraping-raw-result.entity';
+import {
+  getCuratedPlacesCount,
+  searchCuratedPlaces,
+} from './curated-places.provider';
 
 describe('LeadsService', () => {
   let service: LeadsService;
@@ -17,9 +28,34 @@ describe('LeadsService', () => {
     findOne: jest.Mock;
     upsert: jest.Mock;
     findBy: jest.Mock;
+    manager: {
+      transaction: jest.Mock;
+      getRepository: jest.Mock;
+    };
   };
   let leadScoresRepository: {
     find: jest.Mock;
+    findOne: jest.Mock;
+    create: jest.Mock;
+    save: jest.Mock;
+  };
+  let leadAxisScoresRepository: {
+    findOne: jest.Mock;
+    create: jest.Mock;
+    save: jest.Mock;
+  };
+  let scrapingJobsRepository: {
+    create: jest.Mock;
+    find: jest.Mock;
+    save: jest.Mock;
+  };
+  let leadAnalysisRepository: {
+    findOne: jest.Mock;
+    create: jest.Mock;
+    save: jest.Mock;
+  };
+  let scrapingRawResultsRepository: {
+    findOne: jest.Mock;
   };
   let configService: { get: jest.Mock };
 
@@ -29,16 +65,96 @@ describe('LeadsService', () => {
       findOne: jest.fn(),
       upsert: jest.fn(),
       findBy: jest.fn(),
+      manager: {
+        transaction: jest.fn((callback) => callback(repository.manager)),
+        getRepository: jest.fn(),
+      },
     };
     leadScoresRepository = {
       find: jest.fn().mockResolvedValue([]),
+      findOne: jest.fn().mockResolvedValue(null),
+      create: jest.fn((score: Partial<LeadScore>) => score),
+      save: jest.fn((score: Partial<LeadScore>) =>
+        Promise.resolve({
+          id: score.id ?? 1,
+          ...score,
+        }),
+      ),
     };
+    leadAxisScoresRepository = {
+      findOne: jest.fn().mockResolvedValue(null),
+      create: jest.fn((axisScore: Partial<LeadAxisScore>) => axisScore),
+      save: jest.fn((axisScore: Partial<LeadAxisScore>) =>
+        Promise.resolve({
+          id: axisScore.id ?? 1,
+          ...axisScore,
+        }),
+      ),
+    };
+    scrapingJobsRepository = {
+      create: jest.fn((job: Partial<ScrapingJob>) => job),
+      find: jest.fn().mockResolvedValue([]),
+      save: jest.fn((jobs: Partial<ScrapingJob>[]) =>
+        Promise.resolve(
+          jobs.map((job, index) => ({
+            id: index + 1,
+            leadId: job.leadId,
+            jobType: job.jobType,
+            status: job.status,
+            source: job.source,
+            trigger: job.trigger,
+          })),
+        ),
+      ),
+    };
+    leadAnalysisRepository = {
+      findOne: jest.fn().mockResolvedValue(null),
+      create: jest.fn((analysis: Partial<LeadAnalysis>) => analysis),
+      save: jest.fn((analysis: Partial<LeadAnalysis>) =>
+        Promise.resolve({
+          id: analysis.id ?? 10,
+          ...analysis,
+        }),
+      ),
+    };
+    scrapingRawResultsRepository = {
+      findOne: jest.fn().mockResolvedValue(null),
+    };
+    repository.manager.getRepository.mockImplementation((entity) => {
+      if (entity === Lead) {
+        return repository;
+      }
+
+      if (entity === ScrapingJob) {
+        return scrapingJobsRepository;
+      }
+
+      if (entity === LeadAnalysis) {
+        return leadAnalysisRepository;
+      }
+
+      if (entity === LeadScore) {
+        return leadScoresRepository;
+      }
+
+      if (entity === LeadAxisScore) {
+        return leadAxisScoresRepository;
+      }
+
+      throw new Error(`Unexpected repository: ${String(entity)}`);
+    });
     configService = {
-      get: jest.fn().mockReturnValue('test-api-key'),
+      get: jest.fn((key: string) =>
+        key === 'GOOGLE_PLACES_API_KEY' ? 'test-api-key' : undefined,
+      ),
     };
     service = new LeadsService(
       repository as unknown as Repository<Lead>,
       leadScoresRepository as unknown as Repository<LeadScore>,
+      leadAxisScoresRepository as unknown as Repository<LeadAxisScore>,
+      scrapingJobsRepository as unknown as Repository<ScrapingJob>,
+      leadAnalysisRepository as unknown as Repository<LeadAnalysis>,
+      scrapingRawResultsRepository as unknown as Repository<ScrapingRawResult>,
       configService as unknown as ConfigService,
     );
   });
@@ -91,11 +207,34 @@ describe('LeadsService', () => {
     const savedLead = {
       id: 'place-1',
       name: 'Plumber One',
+      website: 'https://plumber.example',
       state: LeadState.RAW,
     } as Lead;
     repository.findBy.mockResolvedValue([savedLead]);
+    repository.findOne.mockResolvedValue(savedLead);
 
-    await expect(service.search('plumber')).resolves.toEqual([savedLead]);
+    await expect(service.search('plumber')).resolves.toEqual([
+      {
+        lead: savedLead,
+        websiteMissing: false,
+        scrapingJobs: {
+          leadId: 'place-1',
+          websiteMissing: false,
+          createdJobs: [
+            {
+              id: 1,
+              leadId: 'place-1',
+              jobType: ScrapingJobType.WEBSITE,
+              status: ScrapingJobStatus.PENDING,
+              source: 'website',
+              trigger: 'initial_enrichment',
+            },
+          ],
+          skippedJobs: [],
+          message: 'Created 1 scraping job(s); skipped 0 active job(s).',
+        },
+      },
+    ]);
     expect(fetch).toHaveBeenCalledWith(
       'https://places.googleapis.com/v1/places:searchText',
       {
@@ -126,6 +265,499 @@ describe('LeadsService', () => {
       ],
       ['id'],
     );
+  });
+
+  it('uses curated provider data deterministically without calling Google', async () => {
+    configService.get.mockImplementation((key: string) =>
+      key === 'PLACES_PROVIDER' ? 'curated' : 'test-api-key',
+    );
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    repository.upsert.mockResolvedValue(undefined);
+    repository.findBy.mockImplementation(({ id }) => {
+      const ids = '_value' in id ? (id._value as string[]) : [];
+      const upsertedLeads = new Map(
+        ((repository.upsert.mock.calls.at(-1)?.[0] ?? []) as Lead[]).map(
+          (lead) => [lead.id, lead],
+        ),
+      );
+      return Promise.resolve(
+        ids.map(
+          (leadId) =>
+            ({
+              id: leadId,
+              name: upsertedLeads.get(leadId)?.name ?? null,
+              website: upsertedLeads.get(leadId)?.website ?? null,
+              state: LeadState.RAW,
+            }) as Lead,
+        ),
+      );
+    });
+    repository.findOne.mockImplementation(({ where }) =>
+      Promise.resolve({
+        id: where.id,
+        website: where.id.includes('tn-bakery-medina')
+          ? 'https://www.paul.fr'
+          : null,
+      }),
+    );
+
+    const firstResult = await service.search('bakery Tunis');
+    const secondResult = await service.search('bakery Tunis');
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(repository.upsert).toHaveBeenNthCalledWith(
+      1,
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'curated-demo-tn-bakery-medina-tunis',
+          name: 'مخبزة المدينة - Boulangerie Medina',
+          website: 'https://www.paul.fr',
+          searchQuery: 'bakery Tunis',
+        }),
+      ]),
+      ['id'],
+    );
+    expect(repository.upsert.mock.calls[1]).toEqual(
+      repository.upsert.mock.calls[0],
+    );
+    expect(firstResult.map((result) => result.lead.id)).toEqual(
+      secondResult.map((result) => result.lead.id),
+    );
+  });
+
+  it('keeps exactly 20 curated leads and query-specific subsets', () => {
+    expect(getCuratedPlacesCount()).toBe(20);
+    expect(
+      searchCuratedPlaces('bakery Tunis').map((place) => place.id),
+    ).toEqual(['curated-demo-tn-bakery-medina-tunis']);
+    expect(
+      searchCuratedPlaces('agency Belgium').map((place) => place.id),
+    ).toEqual([
+      'curated-demo-be-digital-agency-tapptic-brussels',
+      'curated-demo-be-real-estate-century21-brussels',
+    ]);
+    expect(
+      searchCuratedPlaces('hotel Hammamet').map((place) => place.id),
+    ).toEqual(['curated-demo-tn-hotel-la-badira-hammamet']);
+    expect(
+      searchCuratedPlaces('plumber Brussels').map((place) => place.id),
+    ).toEqual(['curated-demo-be-plumber-facq-brussels']);
+    expect(
+      searchCuratedPlaces('dentist France').map((place) => place.id),
+    ).toEqual(['curated-demo-fr-dental-clinic-saint-lazare-paris']);
+  });
+
+  it('creates website jobs only for curated leads with websites', async () => {
+    configService.get.mockImplementation((key: string) =>
+      key === 'PLACES_PROVIDER' ? 'curated' : 'test-api-key',
+    );
+    repository.upsert.mockResolvedValue(undefined);
+    repository.findBy.mockResolvedValue([
+      {
+        id: 'curated-demo-tn-plumber-hydrotek-tunis',
+        website: null,
+        state: LeadState.RAW,
+      },
+      {
+        id: 'curated-demo-be-plumber-facq-brussels',
+        website: 'https://www.facq.be',
+        state: LeadState.RAW,
+      },
+    ] as Lead[]);
+    repository.findOne.mockImplementation(({ where }) =>
+      Promise.resolve({
+        id: where.id,
+        website: where.id.includes('be-plumber-facq')
+          ? 'https://www.facq.be'
+          : null,
+      }),
+    );
+
+    await expect(service.search('plumber')).resolves.toMatchObject([
+      {
+        lead: { id: 'curated-demo-tn-plumber-hydrotek-tunis' },
+        websiteMissing: true,
+        scrapingJobs: {
+          websiteMissing: true,
+          createdJobs: [],
+        },
+      },
+      {
+        lead: { id: 'curated-demo-be-plumber-facq-brussels' },
+        websiteMissing: false,
+        scrapingJobs: {
+          websiteMissing: false,
+          createdJobs: [{ jobType: ScrapingJobType.WEBSITE }],
+        },
+      },
+    ]);
+    expect(scrapingJobsRepository.save).toHaveBeenCalledTimes(1);
+    expect(scrapingJobsRepository.save).toHaveBeenCalledWith([
+      expect.objectContaining({
+        leadId: 'curated-demo-be-plumber-facq-brussels',
+        jobType: ScrapingJobType.WEBSITE,
+        trigger: 'initial_enrichment',
+      }),
+    ]);
+  });
+
+  it('seeds curated demo score and axis rows idempotently', async () => {
+    configService.get.mockImplementation((key: string) =>
+      key === 'PLACES_PROVIDER' ? 'curated' : 'test-api-key',
+    );
+    const savedLead = {
+      id: 'curated-demo-tn-bakery-medina-tunis',
+      name: 'مخبزة المدينة - Boulangerie Medina',
+      website: 'https://www.paul.fr',
+      state: LeadState.RAW,
+    } as Lead;
+    repository.upsert.mockResolvedValue(undefined);
+    repository.findBy.mockResolvedValue([savedLead]);
+    repository.findOne.mockResolvedValue(savedLead);
+    leadAnalysisRepository.findOne
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({
+        id: 20,
+        leadId: savedLead.id,
+        analysisStatus: 'CURATED_DEMO_AXIS_SEED',
+      });
+    leadAnalysisRepository.save.mockResolvedValue({
+      id: 20,
+      leadId: savedLead.id,
+      analysisStatus: 'CURATED_DEMO_AXIS_SEED',
+    });
+    leadScoresRepository.findOne
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ id: 30 });
+    leadAxisScoresRepository.findOne.mockImplementation(() => {
+      const callIndex = leadAxisScoresRepository.findOne.mock.calls.length;
+      return Promise.resolve(callIndex <= 8 ? null : { id: 100 + callIndex });
+    });
+
+    await service.search('bakery Tunis');
+    await service.search('bakery Tunis');
+
+    expect(leadAnalysisRepository.create).toHaveBeenCalledTimes(1);
+    expect(leadScoresRepository.save).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        leadId: savedLead.id,
+        analysisId: 20,
+        periodType: 'current',
+        analysisCost: null,
+        scoreDate: '2026-06-29',
+      }),
+    );
+    expect(leadScoresRepository.save).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        id: 30,
+        leadId: savedLead.id,
+        analysisId: 20,
+        periodType: 'current',
+      }),
+    );
+    expect(leadAxisScoresRepository.save).toHaveBeenCalledTimes(16);
+    expect(leadAxisScoresRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        leadId: savedLead.id,
+        analysisId: 20,
+        axis: LeadScoreAxis.GMB,
+        scoreType: AxisScoreType.DIGITAL_MATURITY,
+        weight: '0.2',
+        isAvailable: true,
+      }),
+    );
+    expect(leadAxisScoresRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        leadId: savedLead.id,
+        analysisId: 20,
+        axis: LeadScoreAxis.WEBSITE,
+        scoreType: AxisScoreType.OPPORTUNITY,
+        weight: '0.35',
+        isAvailable: true,
+      }),
+    );
+    expect(
+      leadAxisScoresRepository.save.mock.calls
+        .slice(8)
+        .every(([axisScore]) => typeof axisScore.id === 'number'),
+    ).toBe(true);
+  });
+
+  it('creates a pending website scraping job by default', async () => {
+    repository.findOne.mockResolvedValue({
+      id: 'place-1',
+      website: 'https://example.com',
+    });
+
+    await expect(service.createScrapingJobsForLead('place-1')).resolves.toEqual(
+      {
+        leadId: 'place-1',
+        websiteMissing: false,
+        createdJobs: [
+          {
+            id: 1,
+            leadId: 'place-1',
+            jobType: ScrapingJobType.WEBSITE,
+            status: ScrapingJobStatus.PENDING,
+            source: 'website',
+            trigger: 'manual',
+          },
+        ],
+        skippedJobs: [],
+        message: 'Created 1 scraping job(s); skipped 0 active job(s).',
+      },
+    );
+    expect(scrapingJobsRepository.find).toHaveBeenCalledWith({
+      where: {
+        leadId: 'place-1',
+        jobType: expect.any(Object),
+        status: expect.any(Object),
+      },
+    });
+    expect(scrapingJobsRepository.save).toHaveBeenCalledWith([
+      {
+        leadId: 'place-1',
+        jobType: ScrapingJobType.WEBSITE,
+        status: ScrapingJobStatus.PENDING,
+        source: 'website',
+        trigger: 'manual',
+      },
+    ]);
+  });
+
+  it('creates only explicitly requested scraping job types', async () => {
+    repository.findOne.mockResolvedValue({
+      id: 'place-1',
+      website: 'https://example.com',
+    });
+    scrapingJobsRepository.save.mockImplementation(
+      (jobs: Partial<ScrapingJob>[]) =>
+        Promise.resolve(
+          jobs.map((job, index) => ({
+            id: index + 20,
+            leadId: job.leadId,
+            jobType: job.jobType,
+            status: job.status,
+            source: job.source,
+            trigger: job.trigger,
+          })),
+        ),
+    );
+
+    await expect(
+      service.createScrapingJobsForLead('place-1', [
+        ScrapingJobType.WEBSITE,
+        ScrapingJobType.SEO,
+      ]),
+    ).resolves.toMatchObject({
+      leadId: 'place-1',
+      websiteMissing: false,
+      createdJobs: [
+        {
+          id: 20,
+          jobType: ScrapingJobType.WEBSITE,
+        },
+        {
+          id: 21,
+          jobType: ScrapingJobType.SEO,
+        },
+      ],
+      skippedJobs: [],
+    });
+    expect(scrapingJobsRepository.save).toHaveBeenCalledWith([
+      {
+        leadId: 'place-1',
+        jobType: ScrapingJobType.WEBSITE,
+        status: ScrapingJobStatus.PENDING,
+        source: 'website',
+        trigger: 'manual',
+      },
+      {
+        leadId: 'place-1',
+        jobType: ScrapingJobType.SEO,
+        status: ScrapingJobStatus.PENDING,
+        source: 'website',
+        trigger: 'manual',
+      },
+    ]);
+  });
+
+  it('skips an existing active website scraping job for the same lead', async () => {
+    repository.findOne.mockResolvedValue({
+      id: 'place-1',
+      website: 'https://example.com',
+    });
+    scrapingJobsRepository.find.mockResolvedValue([
+      {
+        id: 10,
+        leadId: 'place-1',
+        jobType: ScrapingJobType.WEBSITE,
+        status: ScrapingJobStatus.RUNNING,
+        source: 'website',
+        trigger: 'manual',
+      },
+    ]);
+
+    await expect(service.createScrapingJobsForLead('place-1')).resolves.toEqual(
+      {
+        leadId: 'place-1',
+        websiteMissing: false,
+        createdJobs: [],
+        skippedJobs: [
+          {
+            id: 10,
+            leadId: 'place-1',
+            jobType: ScrapingJobType.WEBSITE,
+            status: ScrapingJobStatus.RUNNING,
+            source: 'website',
+            trigger: 'manual',
+          },
+        ],
+        message: 'Created 0 scraping job(s); skipped 1 active job(s).',
+      },
+    );
+    expect(scrapingJobsRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('saves a clear website-missing status and creates no default job', async () => {
+    repository.findOne.mockResolvedValue({ id: 'place-1', website: null });
+
+    await expect(service.createScrapingJobsForLead('place-1')).resolves.toEqual(
+      {
+        leadId: 'place-1',
+        websiteMissing: true,
+        createdJobs: [],
+        skippedJobs: [],
+        message:
+          'Created 0 scraping job(s); skipped 0 active job(s). Website scraping skipped because the lead has no website.',
+      },
+    );
+    expect(scrapingJobsRepository.find).not.toHaveBeenCalled();
+    expect(scrapingJobsRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('does not create scraping jobs for a missing lead', async () => {
+    repository.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.createScrapingJobsForLead('missing'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(scrapingJobsRepository.find).not.toHaveBeenCalled();
+    expect(scrapingJobsRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('returns latest website intelligence without scoring calculations', async () => {
+    const analyzedAt = new Date('2026-06-29T08:00:00.000Z');
+    const createdAt = new Date('2026-06-29T08:01:00.000Z');
+    repository.findOne.mockResolvedValue({
+      id: 'place-1',
+      name: 'Demo Bakery',
+      website: 'https://demo.example',
+      state: LeadState.ENRICHED,
+    });
+    leadAnalysisRepository.findOne.mockResolvedValue({
+      id: 7,
+      websiteUrl: 'https://demo.example',
+      hasWebsite: true,
+      hasSsl: true,
+      hasFacebook: false,
+      hasInstagram: true,
+      seoTitle: 'Demo Bakery',
+      seoDescription: 'Fresh bread',
+      mobileFriendly: null,
+      performanceScore: null,
+      analysisStatus: 'WEBSITE_NORMALIZED',
+      analyzedAt,
+    });
+    scrapingRawResultsRepository.findOne.mockResolvedValue({
+      id: 11,
+      jobId: 10,
+      source: 'website',
+      normalizedStatus: 'NORMALIZED',
+      rawJson: {
+        url: 'https://demo.example',
+        title: 'Demo Bakery',
+      },
+      createdAt,
+    });
+
+    await expect(service.getLeadIntelligence('place-1')).resolves.toEqual({
+      leadId: 'place-1',
+      lead: {
+        id: 'place-1',
+        name: 'Demo Bakery',
+        website: 'https://demo.example',
+        state: LeadState.ENRICHED,
+      },
+      latestAnalysis: {
+        id: 7,
+        websiteUrl: 'https://demo.example',
+        hasWebsite: true,
+        hasSsl: true,
+        hasFacebook: false,
+        hasInstagram: true,
+        seoTitle: 'Demo Bakery',
+        seoDescription: 'Fresh bread',
+        mobileFriendly: null,
+        performanceScore: null,
+        analysisStatus: 'WEBSITE_NORMALIZED',
+        analyzedAt,
+      },
+      latestRawResult: {
+        id: 11,
+        jobId: 10,
+        source: 'website',
+        normalizedStatus: 'NORMALIZED',
+        rawJson: {
+          url: 'https://demo.example',
+          title: 'Demo Bakery',
+        },
+        createdAt,
+      },
+    });
+    expect(leadAnalysisRepository.findOne).toHaveBeenCalledWith({
+      where: {
+        leadId: 'place-1',
+        analysisStatus: 'WEBSITE_NORMALIZED',
+      },
+      order: {
+        analyzedAt: 'DESC',
+        id: 'DESC',
+      },
+    });
+    expect(scrapingRawResultsRepository.findOne).toHaveBeenCalledWith({
+      where: {
+        leadId: 'place-1',
+        source: 'website',
+      },
+      order: {
+        createdAt: 'DESC',
+        id: 'DESC',
+      },
+    });
+  });
+
+  it('returns null intelligence sections for a lead with no scraping data', async () => {
+    repository.findOne.mockResolvedValue({
+      id: 'place-1',
+      name: null,
+      website: null,
+      state: LeadState.RAW,
+    });
+
+    await expect(service.getLeadIntelligence('place-1')).resolves.toEqual({
+      leadId: 'place-1',
+      lead: {
+        id: 'place-1',
+        name: null,
+        website: null,
+        state: LeadState.RAW,
+      },
+      latestAnalysis: null,
+      latestRawResult: null,
+    });
   });
 
   it('keeps the deterministic timeline mock available', async () => {
