@@ -11,6 +11,7 @@ export class DashboardController {
     @Query('start_date') startDate: string,
     @Query('end_date') endDate: string,
   ) {
+    // returns an object
     return this.dashboardService.getDashboardData(startDate, endDate);
   }
 }
