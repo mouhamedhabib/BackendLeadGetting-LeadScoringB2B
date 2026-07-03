@@ -6,6 +6,7 @@ import { ScrapingJobType } from './scraping-job.entity';
 describe('LeadsController', () => {
   const leadsService = {
     createScrapingJobsForLead: jest.fn(),
+    generateAiAnalysis: jest.fn(),
     getLeadIntelligence: jest.fn(),
     search: jest.fn(),
   };
@@ -104,5 +105,22 @@ describe('LeadsController', () => {
       result,
     );
     expect(leadsService.getLeadIntelligence).toHaveBeenCalledWith('place-1');
+  });
+
+  it('delegates live AI analysis generation to the service', async () => {
+    const result = {
+      status: 'success',
+      leadId: 'place-1',
+      generatedAt: '2026-07-03T00:00:00.000Z',
+      analysis: {
+        summary: 'Useful live analysis',
+      },
+    };
+    leadsService.generateAiAnalysis.mockResolvedValue(result);
+
+    await expect(controller.generateAiAnalysis('place-1')).resolves.toBe(
+      result,
+    );
+    expect(leadsService.generateAiAnalysis).toHaveBeenCalledWith('place-1');
   });
 });

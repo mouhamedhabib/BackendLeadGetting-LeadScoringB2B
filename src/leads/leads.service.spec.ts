@@ -1,4 +1,9 @@
-import { NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  ConflictException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { Lead, LeadState } from './lead.entity';
@@ -758,6 +763,178 @@ describe('LeadsService', () => {
       latestAnalysis: null,
       latestRawResult: null,
     });
+  });
+
+  it('generates live AI analysis through FastAPI without database writes', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        success: true,
+        observations: ['Website has a clear service page'],
+        opportunities: ['Improve conversion copy'],
+        recommended_services: ['Landing page optimization'],
+        summary: 'Strong foundation with conversion upside.',
+        confidence: 0.82,
+      }),
+    });
+    jest.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+    repository.findOne.mockResolvedValue({
+      id: 'place-1',
+      name: 'Demo Agency',
+    });
+    scrapingRawResultsRepository.findOne.mockResolvedValue({
+      id: 42,
+      leadId: 'place-1',
+      source: 'website',
+      normalizedStatus: 'NORMALIZED',
+      createdAt: new Date('2026-07-03T10:00:00.000Z'),
+      rawJson: {},
+    });
+    configService.get.mockImplementation((key: string) => {
+      if (key === 'FASTAPI_BASE_URL') {
+        return 'http://fastapi.test';
+      }
+      if (key === 'FASTAPI_AI_ANALYSIS_PATH') {
+        return '/ai/business/:leadId';
+      }
+      return undefined;
+    });
+
+    await expect(service.generateAiAnalysis('place-1')).resolves.toMatchObject({
+      status: 'success',
+      leadId: 'place-1',
+      analysis: {
+        observations: ['Website has a clear service page'],
+        opportunities: ['Improve conversion copy'],
+        recommended_services: ['Landing page optimization'],
+        summary: 'Strong foundation with conversion upside.',
+        confidence: 0.82,
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://fastapi.test/ai/business/place-1',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(scrapingRawResultsRepository.findOne).toHaveBeenCalledWith({
+      where: {
+        leadId: 'place-1',
+        source: 'website',
+        normalizedStatus: 'NORMALIZED',
+      },
+      order: {
+        createdAt: 'DESC',
+        id: 'DESC',
+      },
+    });
+    expect(repository.upsert).not.toHaveBeenCalled();
+    expect(scrapingJobsRepository.save).not.toHaveBeenCalled();
+    expect(leadAnalysisRepository.save).not.toHaveBeenCalled();
+    expect(leadScoresRepository.save).not.toHaveBeenCalled();
+    expect(leadAxisScoresRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('uses default FastAPI AI analysis settings when env vars are absent', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        analysis: {
+          summary: 'Default FastAPI route works.',
+          confidence: 0.75,
+        },
+      }),
+    });
+    jest.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+    repository.findOne.mockResolvedValue({
+      id: 'place-1',
+      name: 'Demo Agency',
+    });
+    scrapingRawResultsRepository.findOne.mockResolvedValue({
+      id: 42,
+      leadId: 'place-1',
+      source: 'website',
+      normalizedStatus: 'NORMALIZED',
+      createdAt: new Date('2026-07-03T10:00:00.000Z'),
+      rawJson: {},
+    });
+
+    await expect(service.generateAiAnalysis('place-1')).resolves.toMatchObject({
+      status: 'success',
+      leadId: 'place-1',
+      analysis: {
+        summary: 'Default FastAPI route works.',
+        confidence: 0.75,
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8001/ai/analyze-lead/place-1',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('does not generate AI analysis for a missing lead', async () => {
+    const fetchMock = jest.fn();
+    jest.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+    repository.findOne.mockResolvedValue(null);
+
+    await expect(service.generateAiAnalysis('missing')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(scrapingRawResultsRepository.findOne).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns a conflict when no normalized website intelligence exists', async () => {
+    const fetchMock = jest.fn();
+    jest.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+    repository.findOne.mockResolvedValue({ id: 'place-1' });
+    scrapingRawResultsRepository.findOne.mockResolvedValue(null);
+
+    await expect(service.generateAiAnalysis('place-1')).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('maps FastAPI transport failures to bad gateway', async () => {
+    jest
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('connect ECONNREFUSED'));
+    repository.findOne.mockResolvedValue({ id: 'place-1' });
+    scrapingRawResultsRepository.findOne.mockResolvedValue({
+      id: 42,
+      leadId: 'place-1',
+      source: 'website',
+      normalizedStatus: 'NORMALIZED',
+      createdAt: new Date('2026-07-03T10:00:00.000Z'),
+      rawJson: {},
+    });
+
+    await expect(service.generateAiAnalysis('place-1')).rejects.toBeInstanceOf(
+      BadGatewayException,
+    );
+  });
+
+  it('maps Gemini failures from FastAPI to service unavailable', async () => {
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: jest.fn().mockResolvedValue({
+        success: false,
+        error_message: 'Gemini quota exhausted',
+      }),
+    } as unknown as Response);
+    repository.findOne.mockResolvedValue({ id: 'place-1' });
+    scrapingRawResultsRepository.findOne.mockResolvedValue({
+      id: 42,
+      leadId: 'place-1',
+      source: 'website',
+      normalizedStatus: 'NORMALIZED',
+      createdAt: new Date('2026-07-03T10:00:00.000Z'),
+      rawJson: {},
+    });
+
+    await expect(service.generateAiAnalysis('place-1')).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
   });
 
   it('keeps the deterministic timeline mock available', async () => {
