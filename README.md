@@ -55,6 +55,17 @@ curl -sS -X POST 'http://localhost:3001/leads/search?query=bakery%20Tunis'
 $ npm install
 ```
 
+## Configuration
+
+The backend can call the local FastAPI scraping module with these defaults:
+
+```bash
+FASTAPI_BASE_URL=http://127.0.0.1:8001
+FASTAPI_AI_ANALYSIS_PATH=/ai/analyze-lead/:leadId
+```
+
+Set either variable in the environment to override the default.
+
 ## Compile and run the project
 
 ```bash

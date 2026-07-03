@@ -79,6 +79,11 @@ export class LeadsController {
     return this.leadsService.getLeadIntelligence(leadId);
   }
 
+  @Post(':leadId/ai-analysis')
+  generateAiAnalysis(@Param('leadId') leadId: string) {
+    return this.leadsService.generateAiAnalysis(leadId);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.leadsService.findOne(id);

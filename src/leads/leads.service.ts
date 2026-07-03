@@ -1,4 +1,6 @@
 import {
+  BadGatewayException,
+  ConflictException,
   Injectable,
   NotFoundException,
   ServiceUnavailableException,
@@ -19,7 +21,10 @@ import {
   ScrapingJobStatus,
   ScrapingJobType,
 } from './scraping-job.entity';
-import { ScrapingRawResult } from './scraping-raw-result.entity';
+import {
+  ScrapingRawResult,
+  ScrapingRawResultStatus,
+} from './scraping-raw-result.entity';
 import { searchCuratedPlaces } from './curated-places.provider';
 
 const GOOGLE_PLACES_URL = 'https://places.googleapis.com/v1/places:searchText';
@@ -166,6 +171,13 @@ export type LeadIntelligenceResponse = {
   latestRawResult: LeadIntelligenceRawResult | null;
 };
 
+export type AiAnalysisResponse = {
+  status: 'success';
+  leadId: string;
+  generatedAt: string;
+  analysis: unknown;
+};
+
 const DEFAULT_SCRAPING_JOB_TYPES_TO_CREATE = [ScrapingJobType.WEBSITE] as const;
 const ACTIVE_SCRAPING_JOB_STATUSES = [
   ScrapingJobStatus.PENDING,
@@ -175,6 +187,9 @@ const MANUAL_SCRAPING_TRIGGER = 'manual';
 const INITIAL_ENRICHMENT_SCRAPING_TRIGGER = 'initial_enrichment';
 const CURATED_DEMO_ANALYSIS_STATUS = 'CURATED_DEMO_AXIS_SEED';
 const CURATED_DEMO_SCORE_DATE = '2026-06-29';
+const DEFAULT_FASTAPI_BASE_URL = 'http://127.0.0.1:8001';
+const DEFAULT_FASTAPI_AI_ANALYSIS_PATH = '/ai/analyze-lead/:leadId';
+const FASTAPI_AI_ANALYSIS_TIMEOUT_MS = 30_000;
 const CURATED_DEMO_SOCIAL_AVAILABLE_LEAD_IDS = new Set([
   'curated-demo-tn-bakery-medina-tunis',
   'curated-demo-fr-restaurant-septime-paris',
@@ -450,6 +465,131 @@ export class LeadsService {
         ? this.toLeadIntelligenceRawResult(latestRawResult)
         : null,
     };
+  }
+
+  async generateAiAnalysis(leadId: string): Promise<AiAnalysisResponse> {
+    const lead = await this.leadsRepository.findOne({
+      where: { id: leadId },
+    });
+
+    if (!lead) {
+      throw new NotFoundException(`Lead with id "${leadId}" not found`);
+    }
+
+    const latestNormalizedRawResult =
+      await this.scrapingRawResultsRepository.findOne({
+        where: {
+          leadId,
+          source: 'website',
+          normalizedStatus: ScrapingRawResultStatus.NORMALIZED,
+        },
+        order: {
+          createdAt: 'DESC',
+          id: 'DESC',
+        },
+      });
+
+    if (!latestNormalizedRawResult) {
+      throw new ConflictException(
+        'No normalized website intelligence available',
+      );
+    }
+
+    const fastApiResponse = await this.requestFastApiAiAnalysis(leadId);
+    const analysis = this.extractAiAnalysis(fastApiResponse);
+
+    return {
+      status: 'success',
+      leadId,
+      generatedAt: new Date().toISOString(),
+      analysis,
+    };
+  }
+
+  private async requestFastApiAiAnalysis(leadId: string): Promise<unknown> {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      FASTAPI_AI_ANALYSIS_TIMEOUT_MS,
+    );
+
+    try {
+      const response = await fetch(this.buildFastApiAiAnalysisUrl(leadId), {
+        method: 'POST',
+        signal: controller.signal,
+      });
+
+      const responseBody = await this.parseJsonResponse(response);
+
+      if (!response.ok) {
+        if (response.status === 503) {
+          throw new ServiceUnavailableException('Gemini unavailable');
+        }
+
+        throw new BadGatewayException('FastAPI unavailable');
+      }
+
+      return responseBody;
+    } catch (error) {
+      if (
+        error instanceof BadGatewayException ||
+        error instanceof ServiceUnavailableException
+      ) {
+        throw error;
+      }
+
+      throw new BadGatewayException('FastAPI unavailable');
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async parseJsonResponse(response: Response): Promise<unknown> {
+    try {
+      return await response.json();
+    } catch {
+      return null;
+    }
+  }
+
+  private extractAiAnalysis(responseBody: unknown): unknown {
+    if (!this.isRecord(responseBody)) {
+      return responseBody;
+    }
+
+    if (responseBody.success === false) {
+      throw new ServiceUnavailableException('Gemini unavailable');
+    }
+
+    if ('analysis' in responseBody) {
+      return responseBody.analysis;
+    }
+
+    if (responseBody.success === true) {
+      const { success: _success, ...analysis } = responseBody;
+      return analysis;
+    }
+
+    return responseBody;
+  }
+
+  private buildFastApiAiAnalysisUrl(leadId: string): string {
+    const baseUrl = (
+      this.configService.get<string>('FASTAPI_BASE_URL') ??
+      DEFAULT_FASTAPI_BASE_URL
+    ).replace(/\/+$/, '');
+    const pathTemplate =
+      this.configService.get<string>('FASTAPI_AI_ANALYSIS_PATH') ??
+      DEFAULT_FASTAPI_AI_ANALYSIS_PATH;
+    const path = pathTemplate.startsWith('/')
+      ? pathTemplate
+      : `/${pathTemplate}`;
+
+    return `${baseUrl}${path.replace(':leadId', encodeURIComponent(leadId))}`;
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
 
   private getMockLeads() {
