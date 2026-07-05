@@ -343,7 +343,20 @@ export function searchCuratedPlaces(query: string): PlacesProviderPlace[] {
   const matches =
     ranked.length > 0 ? ranked : fallbackPlaces(query, marketFilteredPlaces);
 
-  return matches.map(({ categories, markets, keywords, ...place }) => place);
+  return matches.map(toGooglePlace);
+}
+
+function toGooglePlace(place: CuratedPlace): PlacesProviderPlace {
+  return {
+    id: place.id,
+    displayName: place.displayName,
+    formattedAddress: place.formattedAddress,
+    nationalPhoneNumber: place.nationalPhoneNumber,
+    websiteUri: place.websiteUri,
+    rating: place.rating,
+    userRatingCount: place.userRatingCount,
+    location: place.location,
+  };
 }
 
 function scorePlace(place: CuratedPlace, tokens: string[]): number {

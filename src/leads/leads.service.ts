@@ -566,7 +566,8 @@ export class LeadsService {
     }
 
     if (responseBody.success === true) {
-      const { success: _success, ...analysis } = responseBody;
+      const analysis = { ...responseBody };
+      delete analysis.success;
       return analysis;
     }
 

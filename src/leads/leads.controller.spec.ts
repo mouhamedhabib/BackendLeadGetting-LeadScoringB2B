@@ -39,9 +39,9 @@ describe('LeadsController', () => {
     };
     leadsService.createScrapingJobsForLead.mockResolvedValue(result);
 
-    await expect(
-      controller.createScrapingJobsForLead('place-1'),
-    ).resolves.toBe(result);
+    await expect(controller.createScrapingJobsForLead('place-1')).resolves.toBe(
+      result,
+    );
     expect(leadsService.createScrapingJobsForLead).toHaveBeenCalledWith(
       'place-1',
       undefined,

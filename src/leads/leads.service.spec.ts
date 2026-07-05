@@ -26,58 +26,84 @@ import {
   searchCuratedPlaces,
 } from './curated-places.provider';
 
+type MockRepository<T> = {
+  find: jest.Mock<Promise<T[]>, [unknown?]>;
+  findOne: jest.Mock<Promise<T | null>, [unknown?]>;
+  upsert: jest.Mock<Promise<void>, [Partial<T>[], string[]]>;
+  findBy: jest.Mock<Promise<T[]>, [unknown]>;
+  manager: {
+    transaction: jest.Mock<
+      Promise<unknown>,
+      [(manager: MockEntityManager) => Promise<unknown>]
+    >;
+    getRepository: jest.Mock<unknown, [unknown]>;
+  };
+};
+
+type MockEntityManager = {
+  getRepository: jest.Mock<unknown, [unknown]>;
+};
+
+type MockSimpleRepository<T> = {
+  find: jest.Mock<Promise<T[]>, [unknown?]>;
+  findOne: jest.Mock<Promise<T | null>, [unknown?]>;
+  create: jest.Mock<Partial<T>, [Partial<T>]>;
+  save: jest.Mock<Promise<T>, [Partial<T>]>;
+};
+
+type MockScrapingJobsRepository = {
+  create: jest.Mock<Partial<ScrapingJob>, [Partial<ScrapingJob>]>;
+  find: jest.Mock<Promise<ScrapingJob[]>, [unknown?]>;
+  save: jest.Mock<Promise<Partial<ScrapingJob>[]>, [Partial<ScrapingJob>[]]>;
+};
+
+type FindByIdCondition = {
+  id: {
+    _value?: string[];
+  };
+};
+
+type FindOneWhereId = {
+  where: {
+    id: string;
+  };
+};
+
 describe('LeadsService', () => {
   let service: LeadsService;
-  let repository: {
-    find: jest.Mock;
-    findOne: jest.Mock;
-    upsert: jest.Mock;
-    findBy: jest.Mock;
-    manager: {
-      transaction: jest.Mock;
-      getRepository: jest.Mock;
-    };
-  };
-  let leadScoresRepository: {
-    find: jest.Mock;
-    findOne: jest.Mock;
-    create: jest.Mock;
-    save: jest.Mock;
-  };
-  let leadAxisScoresRepository: {
-    findOne: jest.Mock;
-    create: jest.Mock;
-    save: jest.Mock;
-  };
-  let scrapingJobsRepository: {
-    create: jest.Mock;
-    find: jest.Mock;
-    save: jest.Mock;
-  };
-  let leadAnalysisRepository: {
-    findOne: jest.Mock;
-    create: jest.Mock;
-    save: jest.Mock;
-  };
-  let scrapingRawResultsRepository: {
-    findOne: jest.Mock;
-  };
-  let configService: { get: jest.Mock };
+  let repository: MockRepository<Lead>;
+  let leadScoresRepository: MockSimpleRepository<LeadScore>;
+  let leadAxisScoresRepository: Omit<
+    MockSimpleRepository<LeadAxisScore>,
+    'find'
+  >;
+  let scrapingJobsRepository: MockScrapingJobsRepository;
+  let leadAnalysisRepository: Omit<MockSimpleRepository<LeadAnalysis>, 'find'>;
+  let scrapingRawResultsRepository: Pick<
+    MockSimpleRepository<ScrapingRawResult>,
+    'findOne'
+  >;
+  let configService: { get: jest.Mock<string | undefined, [string]> };
 
   beforeEach(() => {
     repository = {
-      find: jest.fn(),
-      findOne: jest.fn(),
-      upsert: jest.fn(),
-      findBy: jest.fn(),
+      find: jest.fn<Promise<Lead[]>, [unknown?]>(),
+      findOne: jest.fn<Promise<Lead | null>, [unknown?]>(),
+      upsert: jest.fn<Promise<void>, [Partial<Lead>[], string[]]>(),
+      findBy: jest.fn<Promise<Lead[]>, [unknown]>(),
       manager: {
-        transaction: jest.fn((callback) => callback(repository.manager)),
-        getRepository: jest.fn(),
+        transaction: jest.fn<
+          Promise<unknown>,
+          [(manager: MockEntityManager) => Promise<unknown>]
+        >((callback) => callback(repository.manager)),
+        getRepository: jest.fn<unknown, [unknown]>(),
       },
     };
     leadScoresRepository = {
-      find: jest.fn().mockResolvedValue([]),
-      findOne: jest.fn().mockResolvedValue(null),
+      find: jest.fn<Promise<LeadScore[]>, [unknown?]>().mockResolvedValue([]),
+      findOne: jest
+        .fn<Promise<LeadScore | null>, [unknown?]>()
+        .mockResolvedValue(null),
       create: jest.fn((score: Partial<LeadScore>) => score),
       save: jest.fn((score: Partial<LeadScore>) =>
         Promise.resolve({
@@ -87,7 +113,9 @@ describe('LeadsService', () => {
       ),
     };
     leadAxisScoresRepository = {
-      findOne: jest.fn().mockResolvedValue(null),
+      findOne: jest
+        .fn<Promise<LeadAxisScore | null>, [unknown?]>()
+        .mockResolvedValue(null),
       create: jest.fn((axisScore: Partial<LeadAxisScore>) => axisScore),
       save: jest.fn((axisScore: Partial<LeadAxisScore>) =>
         Promise.resolve({
@@ -98,7 +126,7 @@ describe('LeadsService', () => {
     };
     scrapingJobsRepository = {
       create: jest.fn((job: Partial<ScrapingJob>) => job),
-      find: jest.fn().mockResolvedValue([]),
+      find: jest.fn<Promise<ScrapingJob[]>, [unknown?]>().mockResolvedValue([]),
       save: jest.fn((jobs: Partial<ScrapingJob>[]) =>
         Promise.resolve(
           jobs.map((job, index) => ({
@@ -113,7 +141,9 @@ describe('LeadsService', () => {
       ),
     };
     leadAnalysisRepository = {
-      findOne: jest.fn().mockResolvedValue(null),
+      findOne: jest
+        .fn<Promise<LeadAnalysis | null>, [unknown?]>()
+        .mockResolvedValue(null),
       create: jest.fn((analysis: Partial<LeadAnalysis>) => analysis),
       save: jest.fn((analysis: Partial<LeadAnalysis>) =>
         Promise.resolve({
@@ -123,7 +153,9 @@ describe('LeadsService', () => {
       ),
     };
     scrapingRawResultsRepository = {
-      findOne: jest.fn().mockResolvedValue(null),
+      findOne: jest
+        .fn<Promise<ScrapingRawResult | null>, [unknown?]>()
+        .mockResolvedValue(null),
     };
     repository.manager.getRepository.mockImplementation((entity) => {
       if (entity === Lead) {
@@ -278,12 +310,12 @@ describe('LeadsService', () => {
     );
     const fetchSpy = jest.spyOn(global, 'fetch');
     repository.upsert.mockResolvedValue(undefined);
-    repository.findBy.mockImplementation(({ id }) => {
-      const ids = '_value' in id ? (id._value as string[]) : [];
+    repository.findBy.mockImplementation(({ id }: FindByIdCondition) => {
+      const ids = id._value ?? [];
       const upsertedLeads = new Map(
-        ((repository.upsert.mock.calls.at(-1)?.[0] ?? []) as Lead[]).map(
-          (lead) => [lead.id, lead],
-        ),
+        repository.upsert.mock.calls
+          .at(-1)?.[0]
+          .map((lead) => [lead.id, lead]) ?? [],
       );
       return Promise.resolve(
         ids.map(
@@ -297,7 +329,7 @@ describe('LeadsService', () => {
         ),
       );
     });
-    repository.findOne.mockImplementation(({ where }) =>
+    repository.findOne.mockImplementation(({ where }: FindOneWhereId) =>
       Promise.resolve({
         id: where.id,
         website: where.id.includes('tn-bakery-medina')
@@ -369,7 +401,7 @@ describe('LeadsService', () => {
         state: LeadState.RAW,
       },
     ] as Lead[]);
-    repository.findOne.mockImplementation(({ where }) =>
+    repository.findOne.mockImplementation(({ where }: FindOneWhereId) =>
       Promise.resolve({
         id: where.id,
         website: where.id.includes('be-plumber-facq')
@@ -436,7 +468,9 @@ describe('LeadsService', () => {
       .mockResolvedValue({ id: 30 });
     leadAxisScoresRepository.findOne.mockImplementation(() => {
       const callIndex = leadAxisScoresRepository.findOne.mock.calls.length;
-      return Promise.resolve(callIndex <= 8 ? null : { id: 100 + callIndex });
+      return Promise.resolve(
+        callIndex <= 8 ? null : ({ id: 100 + callIndex } as LeadAxisScore),
+      );
     });
 
     await service.search('bakery Tunis');
@@ -514,13 +548,18 @@ describe('LeadsService', () => {
         message: 'Created 1 scraping job(s); skipped 0 active job(s).',
       },
     );
-    expect(scrapingJobsRepository.find).toHaveBeenCalledWith({
-      where: {
-        leadId: 'place-1',
-        jobType: expect.any(Object),
-        status: expect.any(Object),
-      },
-    });
+    const findOptions = scrapingJobsRepository.find.mock.calls[0]?.[0] as
+      | {
+          where?: {
+            leadId?: string;
+            jobType?: unknown;
+            status?: unknown;
+          };
+        }
+      | undefined;
+    expect(findOptions?.where?.leadId).toBe('place-1');
+    expect(findOptions?.where?.jobType).toBeDefined();
+    expect(findOptions?.where?.status).toBeDefined();
     expect(scrapingJobsRepository.save).toHaveBeenCalledWith([
       {
         leadId: 'place-1',

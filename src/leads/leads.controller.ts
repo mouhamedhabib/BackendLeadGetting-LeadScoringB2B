@@ -8,7 +8,15 @@ import {
   Query,
 } from '@nestjs/common';
 import { LeadState } from './lead.entity';
-import { LeadMapFilters, LeadsService } from './leads.service';
+import {
+  AiAnalysisResponse,
+  CreateScrapingJobsForLeadResult,
+  LeadIntelligenceResponse,
+  LeadMapFilters,
+  LeadMapMarker,
+  LeadsService,
+  SearchLeadResult,
+} from './leads.service';
 import { ScrapingJobType } from './scraping-job.entity';
 
 type MapQuery = {
@@ -37,12 +45,12 @@ export class LeadsController {
   }
 
   @Get('map')
-  findMapMarkers(@Query() query: MapQuery) {
+  findMapMarkers(@Query() query: MapQuery): Promise<LeadMapMarker[]> {
     return this.leadsService.findMapMarkers(this.parseMapQuery(query));
   }
 
   @Post('search')
-  search(@Query('query') query?: string) {
+  search(@Query('query') query?: string): Promise<SearchLeadResult[]> {
     const normalizedQuery = query?.trim();
     if (!normalizedQuery) {
       throw new BadRequestException('The "query" parameter is required');
@@ -67,7 +75,7 @@ export class LeadsController {
   createScrapingJobsForLead(
     @Param('leadId') leadId: string,
     @Body() body?: CreateScrapingJobsBody,
-  ) {
+  ): Promise<CreateScrapingJobsForLeadResult> {
     return this.leadsService.createScrapingJobsForLead(
       leadId,
       this.parseJobTypes(body?.jobTypes),
@@ -75,12 +83,16 @@ export class LeadsController {
   }
 
   @Get(':leadId/intelligence')
-  getLeadIntelligence(@Param('leadId') leadId: string) {
+  getLeadIntelligence(
+    @Param('leadId') leadId: string,
+  ): Promise<LeadIntelligenceResponse> {
     return this.leadsService.getLeadIntelligence(leadId);
   }
 
   @Post(':leadId/ai-analysis')
-  generateAiAnalysis(@Param('leadId') leadId: string) {
+  generateAiAnalysis(
+    @Param('leadId') leadId: string,
+  ): Promise<AiAnalysisResponse> {
     return this.leadsService.generateAiAnalysis(leadId);
   }
 
@@ -182,8 +194,8 @@ export class LeadsController {
       throw new BadRequestException('jobTypes must be an array');
     }
 
-    const jobTypes = value.map((item) =>
-      typeof item === 'string' ? item.trim().toUpperCase() : item,
+    const jobTypes = value.map((item): string | undefined =>
+      typeof item === 'string' ? item.trim().toUpperCase() : undefined,
     );
 
     if (
