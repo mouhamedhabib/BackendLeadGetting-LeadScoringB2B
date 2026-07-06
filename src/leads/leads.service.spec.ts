@@ -976,8 +976,37 @@ describe('LeadsService', () => {
     );
   });
 
-  it('keeps the deterministic timeline mock available', async () => {
+  it('does not expose legacy timeline mocks unless explicitly enabled', async () => {
+    repository.findOne.mockResolvedValue(null);
+
+    await expect(service.getTimeline('101')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
+  it('keeps legacy timeline mocks gated behind a non-production flag', async () => {
+    configService.get.mockImplementation((key: string) => {
+      if (key === 'ENABLE_LEGACY_MOCK_LEADS') return 'true';
+      if (key === 'NODE_ENV') return 'development';
+      if (key === 'GOOGLE_PLACES_API_KEY') return 'test-api-key';
+      return undefined;
+    });
+
     await expect(service.getTimeline('101')).resolves.toHaveLength(1);
+  });
+
+  it('keeps legacy timeline mocks disabled in production', async () => {
+    configService.get.mockImplementation((key: string) => {
+      if (key === 'ENABLE_LEGACY_MOCK_LEADS') return 'true';
+      if (key === 'NODE_ENV') return 'production';
+      if (key === 'GOOGLE_PLACES_API_KEY') return 'test-api-key';
+      return undefined;
+    });
+    repository.findOne.mockResolvedValue(null);
+
+    await expect(service.getTimeline('101')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
   });
 
   it('returns safe optional detail data for a DB-backed lead', async () => {

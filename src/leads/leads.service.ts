@@ -190,6 +190,7 @@ const CURATED_DEMO_SCORE_DATE = '2026-06-29';
 const DEFAULT_FASTAPI_BASE_URL = 'http://127.0.0.1:8001';
 const DEFAULT_FASTAPI_AI_ANALYSIS_PATH = '/ai/analyze-lead/:leadId';
 const FASTAPI_AI_ANALYSIS_TIMEOUT_MS = 30_000;
+const LEGACY_MOCK_LEADS_FLAG = 'ENABLE_LEGACY_MOCK_LEADS';
 const CURATED_DEMO_SOCIAL_AVAILABLE_LEAD_IDS = new Set([
   'curated-demo-tn-bakery-medina-tunis',
   'curated-demo-fr-restaurant-septime-paris',
@@ -703,9 +704,26 @@ export class LeadsService {
     ];
   }
 
-  /** Keeps the existing deterministic timeline/breakdown mock isolated. */
+  /**
+   * Legacy fixture IDs are available only when explicitly enabled for local
+   * compatibility checks. Normal DB-backed flows should never resolve them.
+   */
   private findMockLead(id: string) {
+    if (!this.legacyMockLeadsEnabled()) {
+      return undefined;
+    }
+
     return this.getMockLeads().find((item) => item.id === id);
+  }
+
+  private legacyMockLeadsEnabled(): boolean {
+    const enabled = this.configService
+      .get<string>(LEGACY_MOCK_LEADS_FLAG)
+      ?.trim()
+      .toLowerCase();
+    const nodeEnv = this.configService.get<string>('NODE_ENV')?.trim();
+
+    return enabled === 'true' && nodeEnv !== 'production';
   }
 
   /**
